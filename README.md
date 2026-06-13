@@ -118,6 +118,14 @@ To change which strategy runs or the time, edit `STRATEGY` in
 Note: a laptop must be awake at 17:00; launchd will run a missed job once the
 machine wakes.
 
+> ⚠️ **Keep this project OUT of `~/Documents`, `~/Desktop`, and `~/Downloads`.**
+> Those are macOS privacy-protected (TCC) folders. Manual terminal runs work there
+> (they inherit Terminal's permissions), but **launchd background jobs are blocked**
+> from reading them and fail with `Operation not permitted`. This project lives at
+> `~/money` for exactly that reason. If you ever move it, keep it under a
+> non-protected path (home root, `~/Developer`, `~/Projects`, …) and update the
+> three absolute paths in the plist.
+
 `paper-run` fetches recent bars (via the same yfinance/ccxt fetchers), computes the
 strategy's BUY/SELL/HOLD signal on the latest bar, checks whether you already hold the
 asset, and submits a market order to the **paper** account when warranted. Use `--dry-run`

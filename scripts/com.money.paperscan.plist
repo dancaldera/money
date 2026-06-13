@@ -8,11 +8,11 @@
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>/Users/danielcaldera/Documents/Desarrollo/money/scripts/daily_paper_run.sh</string>
+        <string>/Users/danielcaldera/money/scripts/daily_paper_run.sh</string>
     </array>
 
     <key>WorkingDirectory</key>
-    <string>/Users/danielcaldera/Documents/Desarrollo/money</string>
+    <string>/Users/danielcaldera/money</string>
 
     <!-- Run every day at 17:00 local time (after the US equity close in any US tz). -->
     <key>StartCalendarInterval</key>
@@ -28,8 +28,8 @@
     <false/>
 
     <key>StandardOutPath</key>
-    <string>/Users/danielcaldera/Documents/Desarrollo/money/results/paper_scan.log</string>
+    <string>/Users/danielcaldera/money/results/paper_scan.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/danielcaldera/Documents/Desarrollo/money/results/paper_scan.log</string>
+    <string>/Users/danielcaldera/money/results/paper_scan.log</string>
 </dict>
 </plist>
