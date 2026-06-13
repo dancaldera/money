@@ -1,0 +1,21 @@
+# Virtual environment
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Secrets — never commit API keys
+.env
+
+# Project data & outputs (regenerated, not source)
+data/
+results/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
