@@ -11,8 +11,8 @@ from __future__ import annotations
 import os
 
 from alpaca.trading.client import TradingClient
-from alpaca.trading.enums import OrderSide, TimeInForce
-from alpaca.trading.requests import MarketOrderRequest
+from alpaca.trading.enums import OrderSide, QueryOrderStatus, TimeInForce
+from alpaca.trading.requests import GetOrdersRequest, MarketOrderRequest
 
 
 class BrokerError(RuntimeError):
@@ -65,6 +65,20 @@ class PaperBroker:
     def is_holding(self, symbol: str) -> bool:
         target = _position_symbol(symbol)
         return any(p.symbol == target for p in self.client.get_all_positions())
+
+    def has_open_order(self, symbol: str) -> bool:
+        """True if there's an unfilled order for this symbol (avoids stacking buys)."""
+        req = GetOrdersRequest(status=QueryOrderStatus.OPEN, limit=200)
+        orders = self.client.get_orders(req)
+        return any(o.symbol in (symbol, _position_symbol(symbol)) for o in orders)
+
+    def position_plpc(self, symbol: str) -> float | None:
+        """Unrealized profit/loss for the position, in percent (e.g. -8.0), or None."""
+        target = _position_symbol(symbol)
+        for p in self.client.get_all_positions():
+            if p.symbol == target:
+                return float(p.unrealized_plpc) * 100 if p.unrealized_plpc else 0.0
+        return None
 
     # --- writes (paper only) ----------------------------------------------
     def buy_notional(self, symbol: str, notional: float, asset: str) -> str:

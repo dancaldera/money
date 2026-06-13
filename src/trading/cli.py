@@ -19,7 +19,7 @@ import yaml
 from .backtest import run_backtest
 from .data import fetch_crypto, fetch_equity, load_or_fetch
 from .live import BrokerError, PaperBroker, evaluate
-from .reporting import RESULTS_DIR, record_run
+from .reporting import RESULTS_DIR, record_paper_action, record_run
 from .signals import get_signal
 from .strategies import STRATEGIES, get_strategy
 
@@ -197,16 +197,19 @@ def cmd_paper_run(args, cfg):
     timeframe = args.timeframe or d.get("timeframe", "1d")
     notional = args.notional or cfg.get("paper", {}).get("notional", 1000)
 
+    stop_loss = args.stop_loss if args.stop_loss is not None else cfg.get("paper", {}).get("stop_loss_pct", 0)
+
     broker = PaperBroker()
     bars = recent_bars(args.symbol, args.asset, timeframe, cfg)
     res = evaluate(
         broker, args.symbol, args.asset, args.strategy, bars,
-        notional=notional, dry_run=args.dry_run,
+        notional=notional, stop_loss_pct=stop_loss, dry_run=args.dry_run,
     )
     mode = " (dry run)" if args.dry_run else ""
     print(f"\nPaper evaluate{mode}: {args.strategy} on {args.symbol} ({args.asset}, {timeframe})")
     print(f"  last price: ${res['last_price']:,.2f}")
-    print(f"  signal:     {res['signal']}   (currently holding: {res['holding']})")
+    pl = f"  (P&L {res['plpc']:+.2f}%)" if res["plpc"] is not None else ""
+    print(f"  signal:     {res['signal']}   (currently holding: {res['holding']}){pl}")
     print(f"  action:     {res['action']}")
     if res["order_id"]:
         print(f"  order id:   {res['order_id']}")
@@ -220,6 +223,47 @@ def cmd_paper_close(args, cfg):
         return
     order_id = broker.close(args.symbol)
     print(f"\nClosed paper position {args.symbol} (order {order_id}).\n")
+
+
+def cmd_paper_scan(args, cfg):
+    """Evaluate one strategy across the whole watchlist and act on each signal."""
+    d = cfg.get("defaults", {})
+    timeframe = args.timeframe or d.get("timeframe", "1d")
+    notional = args.notional or cfg.get("paper", {}).get("notional", 1000)
+    stop_loss = args.stop_loss if args.stop_loss is not None else cfg.get("paper", {}).get("stop_loss_pct", 0)
+
+    targets: list[tuple[str, str]] = []
+    if args.asset in (None, "crypto"):
+        targets += [(s, "crypto") for s in cfg.get("crypto", {}).get("symbols", [])]
+    if args.asset in (None, "stock"):
+        targets += [(s, "stock") for s in cfg.get("stocks", {}).get("symbols", [])]
+    if not targets:
+        raise SystemExit("No symbols found in config/settings.yaml")
+
+    broker = PaperBroker()
+    mode = " (dry run)" if args.dry_run else ""
+    print(f"\nPaper scan{mode}: {args.strategy} across {len(targets)} symbols ({timeframe})")
+    acted = 0
+    for symbol, asset in targets:
+        try:
+            bars = recent_bars(symbol, asset, timeframe, cfg)
+            res = evaluate(
+                broker, symbol, asset, args.strategy, bars,
+                notional=notional, stop_loss_pct=stop_loss, dry_run=args.dry_run,
+            )
+            record_paper_action(res)
+            flag = "" if res["action"] == "none" else "  <-- ACTION"
+            print(
+                f"  {symbol:<10} [{asset:<6}] signal={res['signal']:<4} "
+                f"holding={str(res['holding']):<5} action={res['action']}{flag}"
+            )
+            if res["action"] != "none":
+                acted += 1
+        except Exception as e:  # noqa: BLE001 — keep scanning other symbols
+            print(f"  {symbol:<10} [{asset:<6}] ERROR: {e}")
+
+    verb = "would be placed" if args.dry_run else "placed"
+    print(f"\n{acted} order(s) {verb}. Logged to: {RESULTS_DIR / 'paper_journal.csv'}\n")
 
 
 # --------------------------------------------------------------------------- #
@@ -266,12 +310,22 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--strategy", required=True, choices=strat_choices)
     pr.add_argument("--timeframe", help="1d or 1h (default from config)")
     pr.add_argument("--notional", type=float, help="$ per new position (default from config)")
+    pr.add_argument("--stop-loss", type=float, help="close if position falls this %% (default from config; 0=off)")
     pr.add_argument("--dry-run", action="store_true", help="show the action but place no order")
     pr.set_defaults(func=cmd_paper_run)
 
     pc = sub.add_parser("paper-close", help="Close an open paper position")
     pc.add_argument("--symbol", required=True)
     pc.set_defaults(func=cmd_paper_close)
+
+    pscan = sub.add_parser("paper-scan", help="Run a strategy across the watchlist on the paper account")
+    pscan.add_argument("--strategy", required=True, choices=strat_choices)
+    pscan.add_argument("--asset", choices=["crypto", "stock"], help="limit to one asset class")
+    pscan.add_argument("--timeframe", help="1d or 1h (default from config)")
+    pscan.add_argument("--notional", type=float, help="$ per new position (default from config)")
+    pscan.add_argument("--stop-loss", type=float, help="close if position falls this %% (default from config; 0=off)")
+    pscan.add_argument("--dry-run", action="store_true", help="show actions but place no orders")
+    pscan.set_defaults(func=cmd_paper_scan)
 
     return p
 

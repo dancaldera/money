@@ -11,6 +11,19 @@ import pandas as pd
 # Project root is three levels up: src/trading/reporting/journal.py
 RESULTS_DIR = Path(__file__).resolve().parents[3] / "results"
 JOURNAL_PATH = RESULTS_DIR / "journal.csv"
+PAPER_JOURNAL_PATH = RESULTS_DIR / "paper_journal.csv"
+
+_PAPER_FIELDS = [
+    "timestamp",
+    "symbol",
+    "asset",
+    "strategy",
+    "signal",
+    "holding",
+    "action",
+    "order_id",
+    "last_price",
+]
 
 # Order of columns in the journal CSV.
 _FIELDS = [
@@ -70,6 +83,33 @@ def record_run(meta: dict, stats: pd.Series) -> dict:
     write_header = not JOURNAL_PATH.exists()
     with JOURNAL_PATH.open("a", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=_FIELDS)
+        if write_header:
+            writer.writeheader()
+        writer.writerow(row)
+    return row
+
+
+def record_paper_action(result: dict) -> dict:
+    """Append one live paper-trade evaluation to results/paper_journal.csv.
+
+    ``result`` is the dict returned by ``trading.live.evaluate`` (signal, holding,
+    action, order_id, last_price, ...).
+    """
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    row = {
+        "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "symbol": result.get("symbol", ""),
+        "asset": result.get("asset", ""),
+        "strategy": result.get("strategy", ""),
+        "signal": result.get("signal", ""),
+        "holding": result.get("holding", ""),
+        "action": result.get("action", ""),
+        "order_id": result.get("order_id") or "",
+        "last_price": result.get("last_price", ""),
+    }
+    write_header = not PAPER_JOURNAL_PATH.exists()
+    with PAPER_JOURNAL_PATH.open("a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=_PAPER_FIELDS)
         if write_header:
             writer.writeheader()
         writer.writerow(row)

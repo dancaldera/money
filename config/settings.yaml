@@ -26,3 +26,4 @@ stocks:
 # Paper trading (Alpaca paper account — fake money, never live).
 paper:
   notional: 1000          # dollars committed per new position
+  stop_loss_pct: 8        # close a position if it falls this many % below entry (0 = off)

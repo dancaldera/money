@@ -82,7 +82,41 @@ money paper-run --symbol BTC/USD --asset crypto --strategy sma_cross --dry-run
 
 # Manually close an open paper position
 money paper-close --symbol AAPL
+
+# Run a strategy across the WHOLE watchlist on the paper account
+money paper-scan --strategy rsi_meanrev
+money paper-scan --strategy rsi_meanrev --dry-run   # preview, place nothing
 ```
+
+`paper-scan` skips any symbol you already hold *or* have an unfilled order for, so
+running it repeatedly never stacks duplicate buys. Every evaluation is appended to
+`results/paper_journal.csv`.
+
+### Automated daily runs (macOS launchd)
+
+A launchd agent runs `scripts/daily_paper_run.sh` every day at **17:00 local time**
+(after the US equity close), which calls `paper-scan` for the strategy set in that
+script. Output is appended to `results/paper_scan.log`.
+
+```bash
+# Install / reload the schedule
+cp scripts/com.money.paperscan.plist ~/Library/LaunchAgents/
+launchctl load -w ~/Library/LaunchAgents/com.money.paperscan.plist
+
+# Check it's registered
+launchctl list | grep com.money.paperscan
+
+# Test the exact scheduled run without placing orders
+DRY_RUN=1 bash scripts/daily_paper_run.sh
+
+# Disable the schedule
+launchctl unload -w ~/Library/LaunchAgents/com.money.paperscan.plist
+```
+
+To change which strategy runs or the time, edit `STRATEGY` in
+`scripts/daily_paper_run.sh` or `StartCalendarInterval` in the plist (then reload).
+Note: a laptop must be awake at 17:00; launchd will run a missed job once the
+machine wakes.
 
 `paper-run` fetches recent bars (via the same yfinance/ccxt fetchers), computes the
 strategy's BUY/SELL/HOLD signal on the latest bar, checks whether you already hold the
