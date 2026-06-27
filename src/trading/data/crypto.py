@@ -7,6 +7,8 @@ import time
 import ccxt
 import pandas as pd
 
+from .clean import drop_incomplete_rows
+
 # Columns backtesting.py expects.
 _COLUMNS = ["Open", "High", "Low", "Close", "Volume"]
 
@@ -49,4 +51,5 @@ def fetch_crypto(
     df["Date"] = pd.to_datetime(df["ts"], unit="ms")
     df = df.drop(columns="ts").set_index("Date").sort_index()
     df = df[~df.index.duplicated(keep="first")]
-    return df[_COLUMNS].astype(float)
+    df = drop_incomplete_rows(df[_COLUMNS], _COLUMNS, symbol)
+    return df.astype(float)

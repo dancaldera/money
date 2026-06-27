@@ -5,6 +5,8 @@ from __future__ import annotations
 import pandas as pd
 import yfinance as yf
 
+from .clean import drop_incomplete_rows
+
 _COLUMNS = ["Open", "High", "Low", "Close", "Volume"]
 
 
@@ -32,10 +34,6 @@ def fetch_equity(
     df = df[_COLUMNS].copy()
     df.index.name = "Date"
 
-    # yfinance often appends a current-session bar with volume but NaN OHLC
-    # (and very rarely leaves gaps mid-series). backtesting.py rejects any NaN,
-    # so drop incomplete rows before returning.
-    df = df.dropna(subset=_COLUMNS)
-    if df.empty:
-        raise RuntimeError(f"No complete OHLC rows for ticker '{symbol}'")
+    # yfinance often appends a current-session bar with volume but NaN OHLC.
+    df = drop_incomplete_rows(df, _COLUMNS, symbol)
     return df.astype(float)
