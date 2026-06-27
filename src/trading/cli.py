@@ -20,7 +20,7 @@ import yaml
 from .backtest import run_backtest
 from .data import drop_forming_bar, fetch_crypto, fetch_equity, load_or_fetch
 from .live import BrokerError, PaperBroker, evaluate, stop_breached
-from .reporting import RESULTS_DIR, record_paper_action, record_run, summarize
+from .reporting import RESULTS_DIR, record_paper_action, record_run, summarize, write_dashboard
 from .signals import get_signal
 from .strategies import STRATEGIES, get_strategy
 
@@ -251,6 +251,19 @@ def cmd_validate(args, cfg):
     print()
 
 
+def cmd_dashboard(args, cfg):
+    """Generate a self-contained HTML dashboard from local data and open it."""
+    path = write_dashboard()
+    print(f"\nDashboard written to: {path}")
+    if not args.no_open:
+        import webbrowser
+
+        webbrowser.open(path.as_uri())
+        print("Opened in your browser.\n")
+    else:
+        print(f"Open it with: open {path}\n")
+
+
 def cmd_signal(args, cfg):
     exchange = None
     if args.asset == "crypto":
@@ -459,6 +472,10 @@ def build_parser() -> argparse.ArgumentParser:
     vl.add_argument("--split", default="2025-01-01", help="train/test boundary YYYY-MM-DD (default 2025-01-01)")
     vl.add_argument("--refresh", action="store_true", help="ignore cache, refetch data")
     vl.set_defaults(func=cmd_validate)
+
+    db = sub.add_parser("dashboard", help="Build a self-contained HTML dashboard from local data")
+    db.add_argument("--no-open", action="store_true", help="write the file but don't open a browser")
+    db.set_defaults(func=cmd_dashboard)
 
     sg = sub.add_parser("signal", help="TradingView BUY/SELL recommendation for a symbol")
     sg.add_argument("--symbol", required=True)
