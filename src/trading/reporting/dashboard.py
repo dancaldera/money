@@ -12,14 +12,19 @@ import html
 import os
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
 REPO_DIR = Path(__file__).resolve().parents[3]
 RESULTS_DIR = REPO_DIR / "results"
 DATA_DIR = REPO_DIR / "data"
+
+# Journals are stored in UTC (unambiguous); everything shown to the user is
+# converted to this local zone for display.
+DISPLAY_TZ = ZoneInfo("America/Mexico_City")
 
 
 # --------------------------------------------------------------------------- #
@@ -50,7 +55,7 @@ def _heartbeats() -> list[dict]:
                 age_h = (time.time() - ts) / 3600
                 out.append({
                     "label": label,
-                    "when": datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M"),
+                    "when": datetime.fromtimestamp(ts, DISPLAY_TZ).strftime("%Y-%m-%d %H:%M"),
                     "age_h": age_h,
                     "ok": age_h <= stale_h,
                 })
@@ -124,7 +129,7 @@ def _activity() -> dict:
     if df.empty:
         return {"counts": {}, "last_run": [], "last_when": None}
     counts = df["action"].value_counts().to_dict()
-    df["ts"] = pd.to_datetime(df["timestamp"], errors="coerce")
+    df["ts"] = pd.to_datetime(df["timestamp"], errors="coerce", utc=True)
     # Show the most recent *signal scan* (exclude the stop-loss monitor rows),
     # collapsed to one row per symbol so two near-simultaneous runs don't mix.
     scan = df[df["strategy"] != "stop-monitor"]
@@ -138,7 +143,8 @@ def _activity() -> dict:
          "holding": r["holding"], "action": r["action"]}
         for _, r in last.iterrows()
     ]
-    return {"counts": counts, "last_run": last_run, "last_when": last_ts.strftime("%Y-%m-%d %H:%M") if pd.notna(last_ts) else None}
+    last_when = last_ts.tz_convert(DISPLAY_TZ).strftime("%Y-%m-%d %H:%M") if pd.notna(last_ts) else None
+    return {"counts": counts, "last_run": last_run, "last_when": last_when}
 
 
 def collect_context() -> dict:
@@ -174,7 +180,7 @@ def collect_context() -> dict:
     insights.append("Reminder: paper money only — these strategies are regime-dependent, not a proven edge.")
 
     return {
-        "generated": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+        "generated": datetime.now(DISPLAY_TZ).strftime("%Y-%m-%d %H:%M %Z"),
         "strategy": strategy,
         "heartbeats": _heartbeats(),
         "account": account,
