@@ -17,7 +17,7 @@ from pathlib import Path
 import yaml
 
 from .backtest import run_backtest
-from .data import fetch_crypto, fetch_equity, load_or_fetch
+from .data import drop_forming_bar, fetch_crypto, fetch_equity, load_or_fetch
 from .live import BrokerError, PaperBroker, evaluate, stop_breached
 from .reporting import RESULTS_DIR, record_paper_action, record_run
 from .signals import get_signal
@@ -61,15 +61,21 @@ def get_candles(symbol: str, asset: str, timeframe: str, since: str, cfg: dict, 
 
 
 def recent_bars(symbol: str, asset: str, timeframe: str, cfg: dict):
-    """Fetch fresh recent candles (uncached) for a live signal decision."""
+    """Fetch fresh recent candles (uncached) for a live signal decision.
+
+    Drops the still-forming current bar so the signal is computed on the last
+    *closed* candle, matching the backtest (which only acts on closed bars).
+    """
     lookback_days = 400 if timeframe == "1d" else 45
     since = (date.today() - timedelta(days=lookback_days)).isoformat()
     if asset == "crypto":
         exchange = cfg.get("crypto", {}).get("exchange", "kraken")
-        return fetch_crypto(symbol, timeframe, since, exchange=exchange)
-    if asset == "stock":
-        return fetch_equity(symbol, timeframe, since)
-    raise SystemExit(f"Unknown asset '{asset}' (use 'crypto' or 'stock')")
+        bars = fetch_crypto(symbol, timeframe, since, exchange=exchange)
+    elif asset == "stock":
+        bars = fetch_equity(symbol, timeframe, since)
+    else:
+        raise SystemExit(f"Unknown asset '{asset}' (use 'crypto' or 'stock')")
+    return drop_forming_bar(bars, timeframe)
 
 
 def _one_backtest(symbol, asset, strategy_name, timeframe, since, cash, commission, cfg, refresh, plot):

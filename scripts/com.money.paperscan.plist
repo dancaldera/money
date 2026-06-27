@@ -27,9 +27,11 @@
     <key>RunAtLoad</key>
     <false/>
 
+    <!-- The wrapper manages results/paper_scan.log itself (rotation, notify).
+         These capture only catastrophic errors before that takes over. -->
     <key>StandardOutPath</key>
-    <string>/Users/danielcaldera/money/results/paper_scan.log</string>
+    <string>/Users/danielcaldera/money/results/launchd.paperscan.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/danielcaldera/money/results/paper_scan.log</string>
+    <string>/Users/danielcaldera/money/results/launchd.paperscan.log</string>
 </dict>
 </plist>
