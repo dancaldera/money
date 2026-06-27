@@ -7,9 +7,9 @@ defaults:
   cash: 10000            # starting capital (fake money)
   commission: 0.002      # 0.2% per trade
 
-# Crypto symbols use exchange notation (BASE/QUOTE).
+# Crypto symbols use BASE/QUOTE notation; OHLCV comes from yfinance
+# (BTC/USD -> BTC-USD), which has deep daily history back to inception.
 crypto:
-  exchange: "kraken"     # public OHLCV; kraken is widely accessible
   symbols:
     - "BTC/USD"
     - "ETH/USD"

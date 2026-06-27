@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from trading.data.clean import drop_forming_bar, drop_incomplete_rows
+from trading.data.clean import drop_forming_bar, drop_incomplete_rows, truncation_warning
 
 _COLUMNS = ["Open", "High", "Low", "Close", "Volume"]
 
@@ -73,3 +73,21 @@ def test_forming_hourly_bar_dropped():
 def test_empty_frame_is_returned_unchanged():
     empty = pd.DataFrame({c: [] for c in _COLUMNS})
     assert drop_forming_bar(empty, "1d", now=_NOW).empty
+
+
+# --- truncation_warning ----------------------------------------------------
+
+def test_truncation_warning_when_history_capped():
+    df = _daily(["2024-07-07", "2024-07-08"])
+    msg = truncation_warning(df, "2022-01-01", "BTC/USD")
+    assert msg is not None and "capping history" in msg
+
+
+def test_no_truncation_warning_when_history_complete():
+    df = _daily(["2022-01-03", "2022-01-04"])
+    assert truncation_warning(df, "2022-01-01", "AAPL") is None
+
+
+def test_no_truncation_warning_without_since_or_data():
+    assert truncation_warning(_daily(["2024-01-01"]), None, "X") is None
+    assert truncation_warning(_daily([]), "2022-01-01", "X") is None

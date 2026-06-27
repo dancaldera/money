@@ -17,7 +17,7 @@ logged so you can compare strategies and improve over time.
 
 ```
 src/trading/
-  data/        fetch candles: ccxt (crypto) + yfinance (stocks), cached as parquet
+  data/        fetch candles: yfinance (crypto + stocks), cached as parquet
   signals/     tradingview-ta wrapper -> TradingView's BUY/SELL/NEUTRAL recommendation
   strategies/  your "assumptions": sma_cross, rsi_meanrev (add your own here)
   backtest/    runs a strategy and computes the W&L metrics
@@ -126,7 +126,7 @@ machine wakes.
 > non-protected path (home root, `~/Developer`, `~/Projects`, …) and update the
 > three absolute paths in the plist.
 
-`paper-run` fetches recent bars (via the same yfinance/ccxt fetchers), computes the
+`paper-run` fetches recent bars (via the same yfinance fetchers), computes the
 strategy's BUY/SELL/HOLD signal on the latest bar, checks whether you already hold the
 asset, and submits a market order to the **paper** account when warranted. Use `--dry-run`
 to preview the decision without sending anything. To trade on a schedule, wrap it in

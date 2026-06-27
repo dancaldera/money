@@ -20,6 +20,29 @@ def drop_incomplete_rows(df: pd.DataFrame, columns: list[str], symbol: str) -> p
     return df
 
 
+def truncation_warning(df: pd.DataFrame, since: str | None, symbol: str, tolerance_days: int = 7) -> str | None:
+    """Return a message if the data starts much later than ``since``, else None.
+
+    Some sources silently cap how far back they serve (e.g. Kraken returns only
+    ~720 daily candles). When the earliest bar is well after the requested start,
+    the history is truncated and the caller should be told rather than backtest
+    on a shorter window than it thinks.
+    """
+    if df.empty or not since:
+        return None
+    requested = pd.Timestamp(since)
+    actual = pd.Timestamp(df.index.min())
+    if actual.tzinfo is not None:
+        actual = actual.tz_convert("UTC").tz_localize(None)
+    gap_days = (actual - requested).days
+    if gap_days > tolerance_days:
+        return (
+            f"{symbol}: requested history since {requested.date()} but data starts "
+            f"{actual.date()} ({gap_days} days later) — source is capping history."
+        )
+    return None
+
+
 def drop_forming_bar(df: pd.DataFrame, timeframe: str = "1d", now: datetime | None = None) -> pd.DataFrame:
     """Drop the last bar if its period has not closed yet (UTC).
 

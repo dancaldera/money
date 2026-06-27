@@ -45,10 +45,9 @@ def get_candles(symbol: str, asset: str, timeframe: str, since: str, cfg: dict, 
     """Fetch (cached) OHLCV for a symbol, dispatching by asset class."""
     key = f"{asset}_{symbol}_{timeframe}_{since}"
     if asset == "crypto":
-        exchange = cfg.get("crypto", {}).get("exchange", "kraken")
         return load_or_fetch(
             key,
-            lambda: fetch_crypto(symbol, timeframe, since, exchange=exchange),
+            lambda: fetch_crypto(symbol, timeframe, since),
             refresh=refresh,
         )
     if asset == "stock":
@@ -69,8 +68,7 @@ def recent_bars(symbol: str, asset: str, timeframe: str, cfg: dict):
     lookback_days = 400 if timeframe == "1d" else 45
     since = (date.today() - timedelta(days=lookback_days)).isoformat()
     if asset == "crypto":
-        exchange = cfg.get("crypto", {}).get("exchange", "kraken")
-        bars = fetch_crypto(symbol, timeframe, since, exchange=exchange)
+        bars = fetch_crypto(symbol, timeframe, since)
     elif asset == "stock":
         bars = fetch_equity(symbol, timeframe, since)
     else:

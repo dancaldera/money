@@ -9,7 +9,6 @@ description = "Educational strategy-backtesting & learning lab for crypto and No
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "ccxt",
     "yfinance",
     "tradingview-ta",
     "backtesting",
