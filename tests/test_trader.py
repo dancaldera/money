@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from trading.live.trader import evaluate
+from trading.live.trader import evaluate, stop_breached
 
 
 def _oversold_frame() -> pd.DataFrame:
@@ -78,3 +78,19 @@ def test_no_stop_when_loss_within_threshold():
     )
     assert res["action"] == "none"
     assert b.calls == []
+
+
+def test_stop_breached_threshold():
+    # At or beyond the threshold (note: more negative) -> breached.
+    assert stop_breached(-8.0, 8) is True
+    assert stop_breached(-8.01, 8) is True
+    # Inside the threshold or in profit -> not breached.
+    assert stop_breached(-7.99, 8) is False
+    assert stop_breached(5.0, 8) is False
+
+
+def test_stop_breached_disabled_or_unknown():
+    # A zero/None threshold disables the stop; missing P&L is never a breach.
+    assert stop_breached(-50.0, 0) is False
+    assert stop_breached(-50.0, None) is False
+    assert stop_breached(None, 8) is False

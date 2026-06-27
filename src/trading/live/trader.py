@@ -8,6 +8,15 @@ from .broker import PaperBroker
 from .signals import get_signal_fn
 
 
+def stop_breached(plpc: float | None, stop_loss_pct: float | None) -> bool:
+    """True if a position's unrealized P&L has fallen to/through the stop level.
+
+    ``plpc`` and ``stop_loss_pct`` are both in percent (e.g. -9.0 and 8). A zero
+    or missing threshold disables the stop.
+    """
+    return bool(stop_loss_pct and plpc is not None and plpc <= -abs(stop_loss_pct))
+
+
 def evaluate(
     broker: PaperBroker,
     symbol: str,
@@ -35,9 +44,7 @@ def evaluate(
     pending = broker.has_open_order(symbol)
 
     plpc = broker.position_plpc(symbol) if holding else None
-    stop_hit = bool(
-        holding and stop_loss_pct and plpc is not None and plpc <= -abs(stop_loss_pct)
-    )
+    stop_hit = holding and stop_breached(plpc, stop_loss_pct)
 
     action, order_id = "none", None
     if stop_hit:

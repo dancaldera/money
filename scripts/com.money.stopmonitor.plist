@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.money.stopmonitor</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/danielcaldera/money/scripts/intraday_stop_run.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/danielcaldera/money</string>
+
+    <!-- Check open positions every 30 minutes so a falling position is cut
+         intraday, not just at the once-a-day 17:00 signal scan. -->
+    <key>StartInterval</key>
+    <integer>1800</integer>
+
+    <!-- Also check immediately when the job is (re)loaded. -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/danielcaldera/money/results/stop_monitor.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/danielcaldera/money/results/stop_monitor.log</string>
+</dict>
+</plist>

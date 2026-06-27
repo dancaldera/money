@@ -11,9 +11,10 @@ __pycache__/
 # Secrets — never commit API keys
 .env
 
-# Project data & outputs (regenerated, not source)
-data/
-results/
+# Project data & outputs (regenerated, not source).
+# Anchored to the repo root so they don't also match src/trading/data/ (source).
+/data/
+/results/
 
 # OS / editor
 .DS_Store

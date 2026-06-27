@@ -16,16 +16,23 @@ def sma(values, period: int) -> np.ndarray:
 
 
 def rsi(values, period: int = 14) -> np.ndarray:
-    """Relative Strength Index (Wilder-style smoothing via rolling mean).
+    """Relative Strength Index using Wilder's smoothing.
 
-    Edge cases resolve naturally: a window with no losses -> RSI 100, no gains
-    -> RSI 0, and a flat window (no movement) -> NaN (treated as "no signal").
+    Wilder's smoothing is an exponential moving average with ``alpha = 1/period``
+    (seeded once ``period`` observations exist). This matches the RSI shown by
+    standard charting tools such as TradingView, so the backtest, the live signal
+    and ``money signal`` all agree on the same indicator.
+
+    Edge cases resolve naturally: no losses -> RSI 100, no gains -> RSI 0, and a
+    perfectly flat series -> NaN (treated as "no signal").
     """
     s = pd.Series(values, dtype="float64")
     delta = s.diff()
-    gain = delta.clip(lower=0).rolling(period).mean()
-    loss = (-delta.clip(upper=0)).rolling(period).mean()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
     with np.errstate(divide="ignore", invalid="ignore"):
-        rs = gain / loss
+        rs = avg_gain / avg_loss
     out = 100 - 100 / (1 + rs)
     return out.to_numpy()

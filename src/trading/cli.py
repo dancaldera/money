@@ -18,7 +18,7 @@ import yaml
 
 from .backtest import run_backtest
 from .data import fetch_crypto, fetch_equity, load_or_fetch
-from .live import BrokerError, PaperBroker, evaluate
+from .live import BrokerError, PaperBroker, evaluate, stop_breached
 from .reporting import RESULTS_DIR, record_paper_action, record_run
 from .signals import get_signal
 from .strategies import STRATEGIES, get_strategy
@@ -225,6 +225,68 @@ def cmd_paper_close(args, cfg):
     print(f"\nClosed paper position {args.symbol} (order {order_id}).\n")
 
 
+def _config_symbol_index(cfg: dict) -> dict[str, tuple[str, str]]:
+    """Map Alpaca's slash-less position symbol -> (config symbol, asset class).
+
+    Positions come back as ``BTCUSD``/``AAPL``; this lets us recover the original
+    ``BTC/USD`` form and the asset class for logging and closing.
+    """
+    index: dict[str, tuple[str, str]] = {}
+    for s in cfg.get("crypto", {}).get("symbols", []):
+        index[s.replace("/", "")] = (s, "crypto")
+    for s in cfg.get("stocks", {}).get("symbols", []):
+        index[s.replace("/", "")] = (s, "stock")
+    return index
+
+
+def cmd_paper_stops(args, cfg):
+    """Check open positions against the stop-loss and close any that breach it.
+
+    Unlike ``paper-scan`` this does no signalling or data-fetching — it just reads
+    each position's live P&L from Alpaca and cuts losers. It's cheap enough to run
+    frequently (e.g. every 30 min) so a falling position is stopped intraday
+    rather than waiting for the once-a-day signal scan.
+    """
+    stop_loss = args.stop_loss if args.stop_loss is not None else cfg.get("paper", {}).get("stop_loss_pct", 0)
+    broker = PaperBroker()
+    positions = broker.positions()
+    index = _config_symbol_index(cfg)
+
+    mode = " (dry run)" if args.dry_run else ""
+    print(f"\nStop-loss monitor{mode}: threshold {stop_loss}% across {len(positions)} open position(s)")
+    if not stop_loss:
+        print("  stop-loss disabled (stop_loss_pct=0); nothing to do.\n")
+        return
+    if not positions:
+        print("  no open positions.\n")
+        return
+
+    stopped = 0
+    for p in positions:
+        symbol, asset = index.get(p["symbol"], (p["symbol"], ""))
+        plpc = p["unrealized_plpc"]
+        breached = stop_breached(plpc, stop_loss)
+        action, order_id = "none", None
+        if breached:
+            action = "would_stop" if args.dry_run else "stopped"
+            if not args.dry_run:
+                order_id = broker.close(symbol)
+            stopped += 1
+        record_paper_action(
+            {
+                "symbol": symbol, "asset": asset, "strategy": "stop-monitor",
+                "signal": "STOP" if breached else "-", "holding": True,
+                "action": action, "order_id": order_id,
+                "last_price": round(p["current_price"], 2) if p["current_price"] else "",
+            }
+        )
+        flag = "  <-- STOP" if breached else ""
+        print(f"  {symbol:<10} [{asset:<6}] P&L={plpc:+.2f}%  action={action}{flag}")
+
+    verb = "would be closed" if args.dry_run else "closed"
+    print(f"\n{stopped} position(s) {verb}. Logged to: {RESULTS_DIR / 'paper_journal.csv'}\n")
+
+
 def cmd_paper_scan(args, cfg):
     """Evaluate one strategy across the whole watchlist and act on each signal."""
     d = cfg.get("defaults", {})
@@ -326,6 +388,11 @@ def build_parser() -> argparse.ArgumentParser:
     pscan.add_argument("--stop-loss", type=float, help="close if position falls this %% (default from config; 0=off)")
     pscan.add_argument("--dry-run", action="store_true", help="show actions but place no orders")
     pscan.set_defaults(func=cmd_paper_scan)
+
+    pstops = sub.add_parser("paper-stops", help="Check open positions and close any breaching the stop-loss (run often)")
+    pstops.add_argument("--stop-loss", type=float, help="close if position falls this %% (default from config; 0=off)")
+    pstops.add_argument("--dry-run", action="store_true", help="show breaches but close nothing")
+    pstops.set_defaults(func=cmd_paper_stops)
 
     return p
 
