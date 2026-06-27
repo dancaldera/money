@@ -51,3 +51,15 @@ def test_cash_autoscales_for_high_priced_asset():
     df = df * 1000  # push price into the tens-of-thousands range (BTC-like)
     stats = run_backtest(df, get_strategy("sma_cross"), cash=1_000)
     assert summarize(stats)["trades"] > 0
+
+
+def test_window_alpha_reports_alpha_and_guards_short_data(data):
+    from trading.cli import _window_alpha
+
+    strat = get_strategy("sma_cross")
+    res = _window_alpha(data, strat, cash=10_000, commission=0.002)
+    assert res is not None
+    # alpha is exactly return minus buy & hold.
+    assert res["alpha"] == round(res["return_pct"] - res["buy_hold_pct"], 2)
+    # Too few bars -> no score (None) rather than a misleading number.
+    assert _window_alpha(data.iloc[:30], strat, cash=10_000, commission=0.002) is None

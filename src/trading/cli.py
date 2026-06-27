@@ -14,12 +14,13 @@ import argparse
 from datetime import date, timedelta
 from pathlib import Path
 
+import pandas as pd
 import yaml
 
 from .backtest import run_backtest
 from .data import drop_forming_bar, fetch_crypto, fetch_equity, load_or_fetch
 from .live import BrokerError, PaperBroker, evaluate, stop_breached
-from .reporting import RESULTS_DIR, record_paper_action, record_run
+from .reporting import RESULTS_DIR, record_paper_action, record_run, summarize
 from .signals import get_signal
 from .strategies import STRATEGIES, get_strategy
 
@@ -159,6 +160,95 @@ def cmd_scan(args, cfg):
         best = results[0]
         print(f"\nBest return: {best[0]} ({best[1]}) at {best[2]['return_pct']:.2f}%")
     print(f"All runs logged to: {RESULTS_DIR / 'journal.csv'}\n")
+
+
+def _window_alpha(df, strategy, cash, commission) -> dict | None:
+    """Backtest ``strategy`` over ``df`` and return its stats plus alpha vs B&H."""
+    if len(df) < 60:  # need warmup + a few trades to mean anything
+        return None
+    stats = summarize(run_backtest(df, strategy, cash=cash, commission=commission))
+    stats["alpha"] = round(stats["return_pct"] - stats["buy_hold_pct"], 2)
+    return stats
+
+
+def cmd_validate(args, cfg):
+    """Compare strategies out-of-sample: train vs a held-out test window.
+
+    The strategies have fixed (non-fitted) parameters, so this is a held-out
+    consistency check rather than a parameter optimisation: a strategy is only
+    trustworthy if it beats buy & hold (positive alpha) in BOTH windows. Scoring
+    is on alpha (return - buy&hold), never raw return, so a rising market alone
+    doesn't look like skill.
+    """
+    d = cfg.get("defaults", {})
+    timeframe = args.timeframe or d.get("timeframe", "1d")
+    train_start = args.train_start or d.get("since", "2022-01-01")
+    split = args.split
+    cash = d.get("cash", 10_000)
+    commission = d.get("commission", 0.002)
+    split_ts = pd.Timestamp(split)
+
+    targets: list[tuple[str, str]] = []
+    if args.asset in (None, "crypto"):
+        targets += [(s, "crypto") for s in cfg.get("crypto", {}).get("symbols", [])]
+    if args.asset in (None, "stock"):
+        targets += [(s, "stock") for s in cfg.get("stocks", {}).get("symbols", [])]
+    if not targets:
+        raise SystemExit("No symbols found in config/settings.yaml")
+
+    strategies = [args.strategy] if args.strategy else sorted(STRATEGIES)
+
+    print(f"\nOut-of-sample validation ({timeframe})")
+    print(f"  train: {train_start} -> {split}    test: {split} -> latest")
+    print("  metric: alpha = strategy return - buy&hold return (per window)\n")
+
+    summary: dict[str, dict] = {}
+    for strat in strategies:
+        strategy = get_strategy(strat)
+        print(f"== {strat} ==")
+        print(f"  {'symbol':<10} {'train α':>8} {'test α':>8}   verdict")
+        test_alphas: list[float] = []
+        beats_both = 0
+        for symbol, asset in targets:
+            try:
+                df = get_candles(symbol, asset, timeframe, train_start, cfg, args.refresh)
+                tr = _window_alpha(df[df.index < split_ts], strategy, cash, commission)
+                te = _window_alpha(df[df.index >= split_ts], strategy, cash, commission)
+                if tr is None or te is None:
+                    print(f"  {symbol:<10}   (insufficient history, skipped)")
+                    continue
+                both = tr["alpha"] > 0 and te["alpha"] > 0
+                beats_both += int(both)
+                test_alphas.append(te["alpha"])
+                verdict = (
+                    "robust (both)" if both
+                    else "test only" if te["alpha"] > 0
+                    else "train only" if tr["alpha"] > 0
+                    else "underperforms"
+                )
+                print(f"  {symbol:<10} {tr['alpha']:>7.1f}% {te['alpha']:>7.1f}%   {verdict}")
+            except Exception as e:  # noqa: BLE001
+                print(f"  {symbol:<10}   ERROR: {e}")
+        if test_alphas:
+            mean_te = round(sum(test_alphas) / len(test_alphas), 1)
+            summary[strat] = {"mean_test_alpha": mean_te, "beats_both": beats_both, "n": len(test_alphas)}
+            print(f"  -> mean test alpha {mean_te:+.1f}%   robust in both windows: {beats_both}/{len(test_alphas)}\n")
+        else:
+            print()
+
+    if summary:
+        print("Verdict (ranked by out-of-sample / test alpha):")
+        ranked = sorted(summary.items(), key=lambda kv: kv[1]["mean_test_alpha"], reverse=True)
+        for strat, s in ranked:
+            print(f"  {strat:<12} mean test alpha {s['mean_test_alpha']:+6.1f}%   robust {s['beats_both']}/{s['n']}")
+        best_strat, best = ranked[0]
+        if best["mean_test_alpha"] <= 0:
+            print(f"\nNo strategy beats buy & hold out-of-sample (best is {best_strat} at "
+                  f"{best['mean_test_alpha']:+.1f}%). Honest answer: no edge here yet.")
+        else:
+            print(f"\nBest out-of-sample: {best_strat} ({best['mean_test_alpha']:+.1f}% mean test alpha, "
+                  f"robust {best['beats_both']}/{best['n']}).")
+    print()
 
 
 def cmd_signal(args, cfg):
@@ -360,6 +450,15 @@ def build_parser() -> argparse.ArgumentParser:
     sc.add_argument("--since", help="start date YYYY-MM-DD (default from config)")
     sc.add_argument("--refresh", action="store_true", help="ignore cache, refetch data")
     sc.set_defaults(func=cmd_scan)
+
+    vl = sub.add_parser("validate", help="Out-of-sample train/test comparison of strategies vs buy & hold")
+    vl.add_argument("--strategy", choices=strat_choices, help="limit to one strategy (default: all)")
+    vl.add_argument("--asset", choices=["crypto", "stock"], help="limit to one asset class")
+    vl.add_argument("--timeframe", help="1d or 1h (default from config)")
+    vl.add_argument("--train-start", help="train window start YYYY-MM-DD (default from config 'since')")
+    vl.add_argument("--split", default="2025-01-01", help="train/test boundary YYYY-MM-DD (default 2025-01-01)")
+    vl.add_argument("--refresh", action="store_true", help="ignore cache, refetch data")
+    vl.set_defaults(func=cmd_validate)
 
     sg = sub.add_parser("signal", help="TradingView BUY/SELL recommendation for a symbol")
     sg.add_argument("--symbol", required=True)
