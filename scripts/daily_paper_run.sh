@@ -3,8 +3,11 @@
 # Runs the chosen strategy across the watchlist on the Alpaca PAPER account.
 #
 # Change STRATEGY here to switch what the schedule trades.
+# sma_cross chosen over rsi_meanrev on out-of-sample evidence (`money validate`):
+# higher held-out alpha and the only both-windows winner. Not a proven edge —
+# both strategies are regime-dependent — just the better-supported of the two.
 set -u
-STRATEGY="rsi_meanrev"
+STRATEGY="sma_cross"
 
 # Repo root = parent of this script's directory.
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
