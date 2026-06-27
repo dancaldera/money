@@ -14,6 +14,11 @@ crypto:
     - "BTC/USD"
     - "ETH/USD"
     - "SOL/USD"
+    - "LTC/USD"
+    - "LINK/USD"
+    - "DOGE/USD"
+    - "AVAX/USD"
+    - "AAVE/USD"
 
 # North-American equities (NASDAQ / NYSE tickers).
 stocks:
@@ -22,6 +27,11 @@ stocks:
     - "MSFT"
     - "NVDA"
     - "AMZN"
+    - "GOOGL"
+    - "META"
+    - "TSLA"
+    - "AMD"
+    - "NFLX"
 
 # Paper trading (Alpaca paper account — fake money, never live).
 paper:
