@@ -1,6 +1,8 @@
 #!/bin/bash
 # Daily paper-trading run. Invoked by launchd (see scripts/com.money.paperscan.plist).
 # Runs the chosen strategy across the watchlist on the Alpaca PAPER account.
+# The launchd schedule is 18:05 Mexico City time, just after the 00:00 UTC
+# crypto daily close, so the latest closed crypto candle is fresh.
 #
 # Change STRATEGY here to switch what the schedule trades.
 # sma_cross chosen over rsi_meanrev on out-of-sample evidence (`money validate`):

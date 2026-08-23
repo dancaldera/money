@@ -94,9 +94,11 @@ running it repeatedly never stacks duplicate buys. Every evaluation is appended 
 
 ### Automated daily runs (macOS launchd)
 
-A launchd agent runs `scripts/daily_paper_run.sh` every day at **17:00 local time**
-(after the US equity close), which calls `paper-scan` for the strategy set in that
-script. Output is appended to `results/paper_scan.log`.
+A launchd agent runs `scripts/daily_paper_run.sh` every day at **18:05 local time**.
+In Mexico City this is just after the 00:00 UTC crypto daily close, so crypto
+signals use the candle that just finished instead of one that is nearly a day
+old. It is also after the US equity close. The script calls `paper-scan` for the
+strategy selected inside it and appends output to `results/paper_scan.log`.
 
 ```bash
 # Install / reload the schedule
@@ -115,8 +117,23 @@ launchctl unload -w ~/Library/LaunchAgents/com.money.paperscan.plist
 
 To change which strategy runs or the time, edit `STRATEGY` in
 `scripts/daily_paper_run.sh` or `StartCalendarInterval` in the plist (then reload).
-Note: a laptop must be awake at 17:00; launchd will run a missed job once the
+Note: a laptop must be awake at 18:05; launchd will run a missed job once the
 machine wakes.
+
+### Starting a clean paper run
+
+1. Archive `data/` and `results/`; never archive `.env` with them.
+2. Create a new Alpaca paper account and generate its own paper API keys.
+3. Replace the two `ALPACA_*` values in `.env`, then run `money paper-status` and
+   confirm the new account has no positions or order history.
+4. Set `paper.notional` in `config/settings.yaml` to the intended position size.
+   The current `$1,000` is 1% of a `$100,000` account; scale it when testing a
+   different starting balance.
+5. Run `DRY_RUN=1 bash scripts/daily_paper_run.sh`, then reload both launchd jobs
+   only after the output is correct.
+
+Keep one strategy, watchlist, position size, and stop rule unchanged for an
+entire run so the result can be attributed to a stable experiment.
 
 > ⚠️ **Keep this project OUT of `~/Documents`, `~/Desktop`, and `~/Downloads`.**
 > Those are macOS privacy-protected (TCC) folders. Manual terminal runs work there

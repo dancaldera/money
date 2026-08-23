@@ -14,13 +14,14 @@
     <key>WorkingDirectory</key>
     <string>/Users/danielcaldera/money</string>
 
-    <!-- Run every day at 17:00 local time (after the US equity close in any US tz). -->
+    <!-- Run at 18:05 Mexico City time: just after the 00:00 UTC crypto daily
+         close and after the US equity close. -->
     <key>StartCalendarInterval</key>
     <dict>
         <key>Hour</key>
-        <integer>17</integer>
+        <integer>18</integer>
         <key>Minute</key>
-        <integer>0</integer>
+        <integer>5</integer>
     </dict>
 
     <!-- Don't fire the moment it's loaded; wait for the scheduled time. -->
