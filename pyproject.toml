@@ -22,6 +22,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest"]
+research = ["transformers>=4.40", "torch>=2.2"]
 
 [project.scripts]
 money = "trading.cli:main"

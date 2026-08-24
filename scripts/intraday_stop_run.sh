@@ -23,7 +23,7 @@ EXTRA=""
   echo "Stop monitor: $(date)  dry_run=${DRY_RUN:-0}"
 
   # The CLI loads .env from the working directory, so keys are picked up here.
-  OUT="$("$REPO_DIR/.venv/bin/money" paper-stops $EXTRA 2>&1)"
+  OUT="$("$REPO_DIR/.venv/bin/money" paper-stops --run-id run2 $EXTRA 2>&1)"
   rc=$?
   echo "$OUT"
   echo "Exit code: $rc"
@@ -35,7 +35,7 @@ EXTRA=""
       --alert-title "stop monitor FAILED (exit $rc)" || true
   else
     heartbeat "$REPO_DIR/results/.last_success_stopmonitor"
-    stopped="$(printf '%s\n' "$OUT" | grep -oE '^[0-9]+ position' | grep -oE '^[0-9]+' | head -1)"
+    stopped="$(printf '%s\n' "$OUT" | grep -c 'action=stopped' || true)"
     if [ "${stopped:-0}" != "0" ] && [ "${DRY_RUN:-0}" != "1" ]; then
       notify "money lab" "Stop-loss closed $stopped position(s)"
       # Immediate alert email so the stop is visible in the inbox, not just in

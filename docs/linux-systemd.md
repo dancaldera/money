@@ -1,17 +1,18 @@
 # Running the scheduled jobs on Linux (systemd user timers)
 
-This document records the port of the two scheduled paper-trading jobs from
-**macOS launchd** to **Linux systemd user units**, and everything needed to
-install, verify, test, and remove them. The project originally shipped only
-launchd plists; it now supports both platforms. The code being scheduled is
-unchanged — same wrapper scripts, same CLI, same Alpaca **paper** account.
+This document records the three Linux systemd user jobs used by Run 2 and
+everything needed to install, verify, test, and remove them. The repository's
+older launchd units remain for legacy commands, but they do not provide the
+three-stage Run 2 schedule.
 
 ## What changed
 
 | File | Role |
 |---|---|
 | `scripts/systemd/money-paperscan.service` | Runs `scripts/daily_paper_run.sh` (daily signal scan) |
-| `scripts/systemd/money-paperscan.timer` | Fires it daily at **18:05 local time** |
+| `scripts/systemd/money-paperscan.timer` | Fires daily at **00:05 UTC** for context, scan, and crypto execution |
+| `scripts/systemd/money-stockexecution.service` | Runs guarded stock intents |
+| `scripts/systemd/money-stockexecution.timer` | Fires weekdays at **09:31 America/New_York** |
 | `scripts/systemd/money-stopmonitor.service` | Runs `scripts/intraday_stop_run.sh` (stop-loss monitor) |
 | `scripts/systemd/money-stopmonitor.timer` | Fires it every 30 minutes (:00/:30) and ~10 min after login |
 | `scripts/_lib.sh` | `notify()` now uses `notify-send` on Linux (`osascript` kept for macOS); log rotation creates the target directory if missing |
@@ -22,11 +23,14 @@ still running macOS.
 
 ## Why these schedules
 
-Both match the original launchd intent:
+The schedules match the frozen daily-bar protocol:
 
-- **18:05 America/Mexico_City** is just after the 00:00 UTC crypto daily close,
+- **00:05 UTC** is just after the crypto daily close,
   so crypto signals evaluate the candle that just finished rather than one
   nearly a day old — and after the US equity close.
+- **09:31 America/New_York on weekdays** executes stock intents against the
+  opening market with the frozen 2% gap cap. A holiday/closed session is a safe
+  deferral, not a failed order.
 - **Every 30 minutes** stop checks cut a falling position intraday instead of
   waiting for the once-a-day scan.
 - `Persistent=true` fires any run missed while the machine slept or was off as
@@ -38,7 +42,8 @@ Both match the original launchd intent:
 | launchd (macOS) | systemd (Linux) |
 |---|---|
 | `~/Library/LaunchAgents/*.plist` | `~/.config/systemd/user/*.{service,timer}` |
-| `StartCalendarInterval` 18:05 | `OnCalendar=*-*-* 18:05:00` + `Persistent=true` |
+| daily close job | `OnCalendar=*-*-* 00:05:00 UTC` + `Persistent=true` |
+| separate stock-open job | `OnCalendar=Mon..Fri *-*-* 09:31:00 America/New_York` |
 | `StartInterval` 1800 | `OnCalendar=*:0/30` (+ `OnStartupSec=10min` ≈ `RunAtLoad`) |
 | `launchctl load -w …` | `systemctl --user daemon-reload && systemctl --user enable --now …` |
 | `launchctl list \| grep money` | `systemctl --user list-timers 'money-*'` |
@@ -53,20 +58,20 @@ cd <repo>                                  # e.g. ~/Documents/personal/money
 mkdir -p ~/.config/systemd/user
 cp scripts/systemd/*.service scripts/systemd/*.timer ~/.config/systemd/user/
 systemctl --user daemon-reload
-systemctl --user enable --now money-paperscan.timer money-stopmonitor.timer
+systemctl --user enable --now money-paperscan.timer money-stockexecution.timer money-stopmonitor.timer
 
-# Verify: both should report "enabled", list-timers shows next fire times
-systemctl --user is-enabled money-paperscan.timer money-stopmonitor.timer
+# Verify: all should report "enabled"; list-timers shows next fire times
+systemctl --user is-enabled money-paperscan.timer money-stockexecution.timer money-stopmonitor.timer
 systemctl --user list-timers 'money-*'
 
-# Disable both schedules (units stay installed)
-systemctl --user disable --now money-paperscan.timer money-stopmonitor.timer
+# Disable all schedules (units stay installed)
+systemctl --user disable --now money-paperscan.timer money-stockexecution.timer money-stopmonitor.timer
 ```
 
 ### If the project moves
 
 The `.service` files hardcode `WorkingDirectory` and the absolute script path.
-Update both lines in each `.service`, re-copy them, then
+Update both lines in each of the three `.service` files, re-copy them, then
 `systemctl --user daemon-reload`. The timer files need no changes.
 
 ## Testing without placing orders
@@ -75,6 +80,7 @@ Run the wrappers exactly as systemd does, but with `DRY_RUN=1`:
 
 ```bash
 DRY_RUN=1 bash scripts/daily_paper_run.sh       # tail results/paper_scan.log
+DRY_RUN=1 bash scripts/execute_stock_intents.sh # tail results/stock_execution.log
 DRY_RUN=1 bash scripts/intraday_stop_run.sh     # tail results/stop_monitor.log
 ```
 
@@ -90,8 +96,10 @@ under the `[Service]` heading (drop-in override).
 |---|---|
 | Daily scan log (rotated to ~1000 lines) | `results/paper_scan.log` |
 | Stop monitor log (rotated to ~1000 lines) | `results/stop_monitor.log` |
-| Success heartbeats (unix timestamps) | `results/.last_success_paperscan`, `results/.last_success_stopmonitor` |
-| Paper-trade decision journal | `results/paper_journal.csv` |
+| Stock execution log | `results/stock_execution.log` |
+| Success heartbeats (unix timestamps) | `results/.last_success_paperscan`, `.last_success_context`, `.last_success_stockexecution`, `.last_success_stopmonitor` |
+| Auditable Run 2 event ledger | `results/run2/ledger.sqlite` |
+| Point-in-time research payloads | `results/run2/raw-context/` |
 | Desktop notification on failure / order placed | via `notify-send` |
 | **Email digest** after each real daily run; **alert email** on stop-loss or failure | via `money email-report` (`EMAIL_*` keys in `.env`) |
 
@@ -106,17 +114,16 @@ succeeded recently — check the matching log first.
 - **`Failed to connect to user scope bus`** — the shell can't reach your user
   systemd manager (e.g. inside some sandboxes/containers). Run the
   `systemctl --user` commands from a normal terminal session.
-- **Missed the 18:05 window anyway?** Nothing is lost: `Persistent=true` fires
+- **Missed the 00:05 UTC window anyway?** Nothing is lost: `Persistent=true` fires
   it on next boot/login, or trigger it manually with
   `systemctl --user start money-paperscan.service` (add `--dry-run` thinking by
   setting `Environment=DRY_RUN=1` first if you want a preview).
-- **Check what actually ran** — `journalctl --user -u money-paperscan.service`
-  or `-u money-stopmonitor.service`; the wrapper's own detail is always in the
+- **Check what actually ran** — `journalctl --user -u money-paperscan.service`,
+  `-u money-stockexecution.service`, or `-u money-stopmonitor.service`; detail is in the
   `results/*.log` files above.
 
-## Still on macOS?
+## macOS note
 
-Everything in `scripts/com.money.paperscan.plist` /
-`scripts/com.money.stopmonitor.plist` works as before — see the "macOS
-(launchd)" part of the README's *Automated daily runs* section. The two
-platforms are independent; only install the set that matches your OS.
+The existing launchd files still operate the legacy two-job flow. Run 2 also
+needs a stock-open job, so do not assume those legacy plists reproduce this
+systemd schedule without adding and validating an equivalent third unit.

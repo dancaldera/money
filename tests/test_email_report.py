@@ -27,6 +27,13 @@ def ctx():
         "activity": {"counts": {"bought": 3}, "last_when": "2026-08-23 18:04",
                      "last_run": [{"symbol": "AAVE/USD", "signal": "BUY",
                                    "holding": False, "action": "bought"}]},
+        "run2": {
+            "status": "active", "halt_reason": None, "fees": 1.25,
+            "portfolios": {
+                "baseline": {"equity": 10_050, "return_pct": 0.5,
+                             "completed_trades": 2, "max_drawdown_pct": -0.4},
+            },
+        },
         "insights": ["Equity <b>$101,235</b> across <b>1</b> position(s)."],
     }
 
@@ -40,7 +47,8 @@ def test_subject_carries_equity_and_positions(ctx):
 def test_text_body_lists_all_sections(ctx):
     text = er.build_digest(ctx)[1]
     for marker in ["Paper account", "equity $101,234.56", "AAVEUSD", "Last scan",
-                   "Backtests vs buy & hold", "alpha", "System health", "Insights"]:
+                   "Auditable Run 2", "baseline", "Backtests vs buy & hold", "alpha",
+                   "System health", "Insights"]:
         assert marker in text
 
 

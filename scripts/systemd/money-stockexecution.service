@@ -1,0 +1,10 @@
+[Unit]
+Description=money lab — execute frozen stock intents (Alpaca PAPER only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/danz/Documents/personal/money
+ExecStart=/bin/bash /home/danz/Documents/personal/money/scripts/execute_stock_intents.sh
+

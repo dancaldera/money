@@ -46,6 +46,8 @@ def _heartbeats() -> list[dict]:
     out = []
     for name, label, stale_h in [
         ("paperscan", "Daily signal scan", 30),
+        ("context", "Shadow context collection", 30),
+        ("stockexecution", "Guarded stock execution", 96),
         ("stopmonitor", "Stop-loss monitor", 2),
     ]:
         path = RESULTS_DIR / f".last_success_{name}"
@@ -147,15 +149,38 @@ def _activity() -> dict:
     return {"counts": counts, "last_run": last_run, "last_when": last_when}
 
 
+def _run2_summary() -> dict | None:
+    """Read the auditable Run 2 ledger without requiring broker connectivity."""
+    config_path = REPO_DIR / "config" / "run2.yaml"
+    if not config_path.exists():
+        return None
+    try:
+        from ..run2 import RunLedger, load_run_config
+        from ..run2.reporting import collect_run_report
+
+        cfg = load_run_config(config_path)
+        ledger_path = RESULTS_DIR / cfg.run_id / "ledger.sqlite"
+        if not ledger_path.exists():
+            return None
+        with RunLedger(ledger_path) as ledger:
+            return collect_run_report(cfg, ledger)
+    except Exception:  # noqa: BLE001 — dashboard must remain best-effort
+        return None
+
+
 def collect_context() -> dict:
     strategy = _deployed_strategy()
     account = _account()
     backtests = _backtests(strategy)
     coverage = _coverage()
     activity = _activity()
+    run2 = _run2_summary()
 
     insights: list[str] = []
-    insights.append(f"Paper account is trading <b>{html.escape(strategy)}</b> daily on a held-out, evidence-based basis (see <code>money validate</code>).")
+    insights.append(
+        f"Legacy diagnostics use <b>{html.escape(strategy)}</b>; per-symbol alpha is not "
+        "portfolio evidence. The frozen Run 2 ledger is authoritative when initialized."
+    )
     if account:
         pl = sum(p["unrealized_pl"] for p in account["positions"])
         n = len(account["positions"])
@@ -187,6 +212,7 @@ def collect_context() -> dict:
         "backtests": backtests,
         "coverage": coverage,
         "activity": activity,
+        "run2": run2,
         "insights": insights,
     }
 
@@ -321,6 +347,34 @@ def _activity_card(act: dict) -> str:
     )
 
 
+def _run2_card(report: dict | None) -> str:
+    if not report:
+        return (
+            '<div class="card"><h2>Auditable Run 2</h2>'
+            '<p class="muted">Not initialized. Run <code>money run-init --run-id run2</code> '
+            'only after the paper account is empty and set to $10,000.</p></div>'
+        )
+    rows = ""
+    for name, values in report["portfolios"].items():
+        rows += (
+            f"<tr><td>{html.escape(name)}</td>"
+            f"<td class='{_sign(values['return_pct'])}'>{values['return_pct']:+.2f}%</td>"
+            f"<td>{values['completed_trades']}</td>"
+            f"<td>{values['max_drawdown_pct']:.2f}%</td></tr>"
+        )
+    status_cls = "bad" if report["status"] != "active" else "ok"
+    halt = (
+        f'<div class="neg muted">{html.escape(str(report["halt_reason"]))}</div>'
+        if report.get("halt_reason") else ""
+    )
+    return (
+        '<div class="card full"><h2>Auditable Run 2</h2>'
+        f'<span class="pill {status_cls}">{html.escape(report["status"])}</span>{halt}'
+        '<table style="margin-top:10px"><tr><th>portfolio</th><th>return</th>'
+        f'<th>closed</th><th>max DD</th></tr>{rows}</table></div>'
+    )
+
+
 def render_body(ctx: dict) -> str:
     return (
         _styles()
@@ -332,6 +386,7 @@ def render_body(ctx: dict) -> str:
         + _health_card(ctx["heartbeats"])
         + _activity_card(ctx["activity"])
         + _backtests_card(ctx["backtests"], ctx["strategy"])
+        + _run2_card(ctx.get("run2"))
         + _insights_card(ctx["insights"])
         + _coverage_card(ctx["coverage"])
         + '</div></div>'

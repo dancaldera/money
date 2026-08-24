@@ -12,19 +12,12 @@ from __future__ import annotations
 import pandas as pd
 
 from ..strategies import RsiMeanReversion, SmaCross
-from ..strategies.base import rsi, sma
+from ..strategies.base import rsi, sma_cross_signal as shared_sma_cross_signal
 
 
 def sma_cross_signal(df: pd.DataFrame) -> str:
     """BUY on a fresh fast-over-slow up-cross, SELL on the reverse cross."""
-    if len(df) < SmaCross.n2 + 2:
-        return "HOLD"
-    close = df["Close"]
-    s1 = pd.Series(sma(close, SmaCross.n1))
-    s2 = pd.Series(sma(close, SmaCross.n2))
-    up = s1.iloc[-2] <= s2.iloc[-2] and s1.iloc[-1] > s2.iloc[-1]
-    down = s1.iloc[-2] >= s2.iloc[-2] and s1.iloc[-1] < s2.iloc[-1]
-    return "BUY" if up else "SELL" if down else "HOLD"
+    return shared_sma_cross_signal(df["Close"], SmaCross.n1, SmaCross.n2)
 
 
 def rsi_meanrev_signal(df: pd.DataFrame) -> str:

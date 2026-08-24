@@ -23,7 +23,7 @@ def test_readers_are_graceful_when_files_missing(empty_dirs):
     assert dashboard._activity() == {"counts": {}, "last_run": [], "last_when": None}
     # Heartbeats always return one entry per job, flagged not-ok when absent.
     hbs = dashboard._heartbeats()
-    assert len(hbs) == 2 and all(h["ok"] is False for h in hbs)
+    assert len(hbs) == 4 and all(h["ok"] is False for h in hbs)
 
 
 def test_backtests_picks_latest_per_symbol(empty_dirs):

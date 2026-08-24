@@ -1,0 +1,75 @@
+run_id: run2
+starting_equity: 100000
+strategy:
+  name: sma_cross
+  fast_window: 10
+  slow_window: 30
+  timeframe: 1d
+  stop_loss_pct: 8
+  require_fresh_cross_after_stop: true
+portfolio:
+  position_notional: 625
+  max_positions: 8
+  max_gross_exposure: 5000
+  max_crypto_positions: 4
+  max_crypto_exposure: 2500
+  max_stock_positions: 6
+  max_stock_exposure: 3750
+  correlation_window: 60
+  correlation_threshold: 0.80
+  correlation_matches_allowed: 1
+  drawdown_halt_pct: 5
+execution:
+  stock_gap_limit_pct: 2
+  crypto_gap_limit_pct: 3
+  paper_only: true
+  use_margin: false
+  equity_slippage_bps: 5
+  crypto_taker_fee_bps: 25
+research:
+  regime_min_score: 3
+  feature_max_age_hours: 36
+  news_lookback_days: 60
+  news_min_observations: 30
+  negative_news_z: 2.0
+  sec_lookback_hours: 48
+  sec_forms:
+    - 8-K
+    - 10-K
+    - 10-Q
+    - NT 10-K
+    - NT 10-Q
+    - S-3
+    - 424B2
+    - 424B3
+    - 424B5
+    - DEF 14A
+  vix_percentile: 0.80
+  volatility_percentile: 0.80
+  model: ProsusAI/finbert
+  model_revision: "4556d13015211d73dccd3fdd39d39232506f3e43"
+  arms:
+    - baseline
+    - shadow_regime
+    - shadow_regime_news
+crypto:
+  symbols:
+    - BTC/USD
+    - ETH/USD
+    - SOL/USD
+    - LTC/USD
+    - LINK/USD
+    - DOGE/USD
+    - AVAX/USD
+    - AAVE/USD
+stocks:
+  symbols:
+    - AAPL
+    - MSFT
+    - NVDA
+    - AMZN
+    - GOOGL
+    - META
+    - TSLA
+    - AMD
+    - NFLX

@@ -1,11 +1,11 @@
 [Unit]
-Description=money lab — daily paper-scan schedule (18:05 America/Mexico_City)
+Description=money lab — crypto close/context schedule (00:05 UTC)
 
 [Timer]
-# 18:05 local: just after the 00:00 UTC crypto daily close, after the US equity
-# close — the latest closed crypto candle is fresh. Persistent=true fires a
+# 00:05 UTC: just after the crypto daily close and after the US equity close —
+# the latest closed crypto candle is fresh. Persistent=true fires a
 # missed run on wake/boot (same behaviour launchd gave the Mac).
-OnCalendar=*-*-* 18:05:00
+OnCalendar=*-*-* 00:05:00 UTC
 Persistent=true
 Unit=money-paperscan.service
 

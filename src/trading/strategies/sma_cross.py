@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 from backtesting import Strategy
-from backtesting.lib import crossover
-
-from .base import sma
+from .base import sma_cross_signal
 
 
 class SmaCross(Strategy):
@@ -13,12 +11,13 @@ class SmaCross(Strategy):
     n2 = 30  # slow moving-average window
 
     def init(self):
-        self.sma1 = self.I(sma, self.data.Close, self.n1)
-        self.sma2 = self.I(sma, self.data.Close, self.n2)
+        # Indicators are evaluated by the shared pure signal function in next().
+        pass
 
     def next(self):
-        if crossover(self.sma1, self.sma2):
+        signal = sma_cross_signal(self.data.Close, self.n1, self.n2)
+        if signal == "BUY":
             self.position.close()
             self.buy()
-        elif crossover(self.sma2, self.sma1):
+        elif signal == "SELL":
             self.position.close()

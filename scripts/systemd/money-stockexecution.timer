@@ -1,0 +1,11 @@
+[Unit]
+Description=money lab — guarded stock execution at 09:31 America/New_York
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 09:31:00 America/New_York
+Persistent=true
+AccuracySec=15s
+Unit=money-stockexecution.service
+
+[Install]
+WantedBy=timers.target

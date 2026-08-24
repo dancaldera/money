@@ -15,6 +15,22 @@ def sma(values, period: int) -> np.ndarray:
     return pd.Series(values).rolling(period).mean().to_numpy()
 
 
+def sma_cross_signal(values, fast: int = 10, slow: int = 30) -> str:
+    """Return BUY/SELL only on a fresh SMA cross, otherwise HOLD.
+
+    This pure function is the single source of truth for both the backtest
+    strategy and the scheduled paper decision engine.
+    """
+    close = pd.Series(values, dtype="float64")
+    if len(close) < slow + 2:
+        return "HOLD"
+    fast_sma = close.rolling(fast).mean()
+    slow_sma = close.rolling(slow).mean()
+    up = fast_sma.iloc[-2] <= slow_sma.iloc[-2] and fast_sma.iloc[-1] > slow_sma.iloc[-1]
+    down = fast_sma.iloc[-2] >= slow_sma.iloc[-2] and fast_sma.iloc[-1] < slow_sma.iloc[-1]
+    return "BUY" if up else "SELL" if down else "HOLD"
+
+
 def rsi(values, period: int = 14) -> np.ndarray:
     """Relative Strength Index using Wilder's smoothing.
 

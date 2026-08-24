@@ -173,6 +173,20 @@ def _render_text(ctx: dict) -> str:
         else:
             w("  no open positions")
 
+    run2 = ctx.get("run2")
+    w("\n-- Auditable Run 2 --")
+    if not run2:
+        w("  not initialized")
+    else:
+        halt = f" · HALT: {run2['halt_reason']}" if run2.get("halt_reason") else ""
+        w(f"  status={run2['status']}{halt} · fees {_money(run2.get('fees', 0))}")
+        for name, values in run2.get("portfolios", {}).items():
+            w(
+                f"    {name:<20} equity {_money(values['equity'])} "
+                f"return {_pct(values['return_pct'])}  closed={values['completed_trades']} "
+                f"maxDD={values['max_drawdown_pct']:.2f}%"
+            )
+
     act = ctx.get("activity", {})
     w(f"\n-- Last scan{(' (' + act['last_when'] + ')') if act.get('last_when') else ''} "
       f"[strategy: {ctx.get('strategy', '?')}] --")
@@ -288,6 +302,35 @@ def _render_html(ctx: dict) -> str:
             + _th("symbol", "qty", "value", "P&amp;L", "%") + pos_rows + "</table>"
         )
     parts.append(_card("Paper account (Alpaca, fake money)", inner))
+
+    run2 = ctx.get("run2")
+    if run2:
+        run_rows = ""
+        for name, values in run2.get("portfolios", {}).items():
+            run_rows += _tds(
+                esc(name),
+                _money(values["equity"]),
+                (_pct(values["return_pct"]), "green" if values["return_pct"] > 0 else "red"),
+                str(values["completed_trades"]),
+                f'{values["max_drawdown_pct"]:.2f}%',
+            )
+        halt = (
+            f'<div style="color:{_C["red"]};font-size:12px;margin-bottom:6px">'
+            f'HALT: {esc(str(run2["halt_reason"]))}</div>'
+            if run2.get("halt_reason") else ""
+        )
+        inner = (
+            f'<div style="font-size:12px;margin-bottom:6px">status: '
+            f'<b>{esc(run2["status"])}</b> · fees {esc(_money(run2.get("fees", 0)))}</div>'
+            + halt
+            + '<table style="border-collapse:collapse;width:100%">'
+            + _th("portfolio", "equity", "return", "closed", "max DD")
+            + run_rows
+            + "</table>"
+        )
+    else:
+        inner = f'<p style="margin:0;color:{_C["grey"]};font-size:13px">not initialized</p>'
+    parts.append(_card("Auditable Run 2", inner))
 
     act = ctx.get("activity", {})
     scan_rows = ""

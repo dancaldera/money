@@ -18,7 +18,7 @@ import pandas as pd
 import yaml
 
 from .backtest import run_backtest
-from .data import drop_forming_bar, fetch_crypto, fetch_equity, load_or_fetch
+from .data import drop_forming_bar, fetch_alpaca_daily, fetch_crypto, fetch_equity, load_or_fetch
 from .live import BrokerError, PaperBroker, evaluate, stop_breached
 from .reporting import RESULTS_DIR, record_paper_action, record_run, summarize, write_dashboard
 from .reporting import email_report as email_report_mod
@@ -31,6 +31,7 @@ except ImportError:  # pragma: no cover
     load_dotenv = None
 
 CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "settings.yaml"
+RUN2_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "run2.yaml"
 # The project's .env lives at the repo root; loading it explicitly lets the
 # `money` command work from any directory (e.g. via a PATH symlink), not just
 # from the repo root where a bare load_dotenv() would find it.
@@ -107,6 +108,47 @@ def _fmt_row(row: dict) -> str:
         f"maxDD={row['max_drawdown_pct']:>7.2f}%  "
         f"sharpe={row['sharpe']:>6.3f}"
     )
+
+
+def _run2(args, with_broker: bool = False):
+    """Load the frozen Run 2 manifest and ledger lazily."""
+    from .run2 import RunLedger, load_run_config
+    from .run2.service import Run2Service, RunSafetyError
+
+    config_path = Path(getattr(args, "run_config", None) or RUN2_CONFIG_PATH)
+    run_cfg = load_run_config(config_path)
+    requested = getattr(args, "run_id", None)
+    if requested and requested != run_cfg.run_id:
+        raise RunSafetyError(
+            f"Requested run {requested!r} does not match manifest run_id {run_cfg.run_id!r}"
+        )
+    ledger = RunLedger(RESULTS_DIR / run_cfg.run_id / "ledger.sqlite")
+    broker = PaperBroker() if with_broker else None
+    return run_cfg, ledger, Run2Service(run_cfg, ledger, broker)
+
+
+def _run2_bars(run_cfg, cfg: dict, *, refresh: bool = False, recent: bool = True):
+    """Load Run 2 bars exclusively from Alpaca, with stale-cache fallback."""
+    bars = {}
+    for symbol, asset in run_cfg.symbols:
+        since = (date.today() - timedelta(days=400)).isoformat() if recent else "2022-01-01"
+        key = f"alpaca_{asset}_{symbol}_1d_{since}"
+        frame = load_or_fetch(
+            key,
+            lambda symbol=symbol, asset=asset, since=since: fetch_alpaca_daily(
+                symbol, asset, since
+            ),
+            refresh=refresh or recent,
+        )
+        bars[symbol] = drop_forming_bar(frame, "1d")
+    if not recent:
+        spy = load_or_fetch(
+            "alpaca_stock_SPY_1d_2022-01-01",
+            lambda: fetch_alpaca_daily("SPY", "stock", "2022-01-01"),
+            refresh=refresh,
+        )
+        bars["SPY"] = drop_forming_bar(spy, "1d")
+    return bars
 
 
 # --------------------------------------------------------------------------- #
@@ -372,6 +414,24 @@ def cmd_paper_stops(args, cfg):
     frequently (e.g. every 30 min) so a falling position is stopped intraday
     rather than waiting for the once-a-day signal scan.
     """
+    if getattr(args, "run_id", None):
+        run_cfg, ledger, service = _run2(args, with_broker=True)
+        try:
+            reconciliation = service.reconcile()
+            results = service.check_stops(dry_run=args.dry_run)
+            mode = " (dry run)" if args.dry_run else ""
+            print(f"\nRun {run_cfg.run_id} stop monitor{mode}: {run_cfg.strategy.stop_loss_pct}%")
+            for row in results:
+                pl = f" P&L={row['plpc']:+.2f}%" if "plpc" in row else ""
+                print(f"  {row['symbol']:<10}{pl} action={row['action']}")
+            print(
+                f"  reconciliation: fills={reconciliation['new_fills']} "
+                f"fees={reconciliation['new_fees']} halted={reconciliation['halted']}\n"
+            )
+            return
+        finally:
+            ledger.close()
+
     stop_loss = args.stop_loss if args.stop_loss is not None else cfg.get("paper", {}).get("stop_loss_pct", 0)
     broker = PaperBroker()
     positions = broker.positions()
@@ -414,6 +474,32 @@ def cmd_paper_stops(args, cfg):
 
 def cmd_paper_scan(args, cfg):
     """Evaluate one strategy across the whole watchlist and act on each signal."""
+    if getattr(args, "run_id", None):
+        run_cfg, ledger, service = _run2(args, with_broker=False)
+        try:
+            if args.strategy != run_cfg.strategy.name:
+                raise SystemExit(
+                    f"Run {run_cfg.run_id} is frozen to strategy {run_cfg.strategy.name}"
+                )
+            bars = _run2_bars(run_cfg, cfg, recent=True)
+            results = service.scan(bars, record=not args.dry_run)
+            print(f"\nRun {run_cfg.run_id}: recorded baseline and shadow decisions")
+            for row in results:
+                if row["portfolio"] == "baseline":
+                    print(
+                        f"  {row['symbol']:<10} [{row['asset']:<6}] "
+                        f"signal={row['signal']:<4} action={row['action']:<11} reason={row['reason']}"
+                    )
+            if args.dry_run:
+                pending = sum(1 for row in results if row["portfolio"] == "baseline" and row["status"] == "pending")
+                print(f"\n{pending} baseline intent(s) would be created; ledger unchanged.\n")
+            else:
+                pending = len(ledger.decisions(run_cfg.run_id, "baseline", "pending"))
+                print(f"\n{pending} baseline intent(s) pending guarded execution.\n")
+            return
+        finally:
+            ledger.close()
+
     d = cfg.get("defaults", {})
     timeframe = args.timeframe or d.get("timeframe", "1d")
     notional = args.notional or cfg.get("paper", {}).get("notional", 1000)
@@ -451,6 +537,167 @@ def cmd_paper_scan(args, cfg):
 
     verb = "would be placed" if args.dry_run else "placed"
     print(f"\n{acted} order(s) {verb}. Logged to: {RESULTS_DIR / 'paper_journal.csv'}\n")
+
+
+def cmd_run_init(args, cfg):
+    run_cfg, ledger, service = _run2(args, with_broker=True)
+    try:
+        account = service.initialize()
+        print(f"\nInitialized frozen paper run {run_cfg.run_id}")
+        print(f"  equity:   ${account['equity']:,.2f}")
+        print(f"  manifest: {run_cfg.fingerprint}")
+        print(f"  ledger:   {ledger.path}\n")
+    finally:
+        ledger.close()
+
+
+def cmd_collect_context(args, cfg):
+    from .run2.context import ContextCollector, fetch_alpaca_news, fetch_sec_filings
+
+    run_cfg, ledger, service = _run2(args, with_broker=False)
+    try:
+        ledger.assert_manifest(run_cfg)
+        frames = _run2_bars(run_cfg, cfg, refresh=args.refresh, recent=False)
+        collector = ContextCollector(
+            run_cfg, ledger, RESULTS_DIR / run_cfg.run_id / "raw-context"
+        )
+        scores = collector.collect_regimes(frames)
+        print(f"\nRun {run_cfg.run_id} regime context:")
+        for scope, value in scores.items():
+            print(f"  {scope:<7} {value['value']}/4  {value['flags']}")
+        if not args.skip_news:
+            articles = fetch_alpaca_news(run_cfg)
+            loads = collector.collect_news(articles)
+            mentioned = sum(1 for value in loads.values() if value > 0)
+            print(f"  news: {len(articles)} article(s), {mentioned} watchlist symbol(s) mentioned")
+        if not args.skip_sec:
+            filings = fetch_sec_filings(run_cfg)
+            filing_counts = collector.collect_sec_filings(filings)
+            mentioned = sum(1 for count in filing_counts.values() if count)
+            print(f"  SEC: {len(filings)} filing(s), {mentioned} watchlist issuer(s)")
+        print()
+    finally:
+        ledger.close()
+
+
+def cmd_execute_intents(args, cfg):
+    run_cfg, ledger, service = _run2(args, with_broker=True)
+    try:
+        assets = [args.asset] if args.asset else ["crypto", "stock"]
+        all_results = []
+        deferred_assets: set[str] = set()
+        for asset in assets:
+            try:
+                asset_results = service.execute_pending(asset, dry_run=args.dry_run)
+                if any(row.get("action") == "deferred_market_closed" for row in asset_results):
+                    deferred_assets.add(asset)
+                all_results.extend(asset_results)
+            except Exception as exc:
+                if args.asset or asset == "crypto":
+                    raise
+                print(f"  stock execution deferred: {exc}")
+        if not args.dry_run:
+            pending_shadow = []
+            for portfolio in ("shadow_regime", "shadow_regime_news"):
+                pending_shadow.extend(ledger.decisions(run_cfg.run_id, portfolio, "pending"))
+            prices = {}
+            for row in pending_shadow:
+                if row["asset"] not in deferred_assets and (not args.asset or row["asset"] == args.asset):
+                    prices[row["symbol"]] = service.broker.latest_price(row["symbol"], row["asset"])
+            all_results.extend(service.simulate_shadow(prices))
+        mode = " (dry run)" if args.dry_run else ""
+        print(f"\nRun {run_cfg.run_id} guarded execution{mode}:")
+        if not all_results:
+            print("  no eligible intents")
+        for row in all_results:
+            print(f"  {row}")
+        print()
+    finally:
+        ledger.close()
+
+
+def cmd_reconcile_run(args, cfg):
+    run_cfg, ledger, service = _run2(args, with_broker=True)
+    try:
+        result = service.reconcile()
+        print(f"\nRun {run_cfg.run_id} reconciliation")
+        for key, value in result.items():
+            print(f"  {key}: {value}")
+        print()
+    finally:
+        ledger.close()
+
+
+def cmd_run_report(args, cfg):
+    from .run2.reporting import collect_run_report, render_run_report
+    from .run2.portfolio import primary_benchmark
+
+    run_cfg, ledger, service = _run2(args, with_broker=False)
+    try:
+        frames = _run2_bars(run_cfg, cfg, refresh=False, recent=False)
+        marks = {s: float(f["Close"].iloc[-1]) for s, f in frames.items() if s != "SPY"}
+        run = ledger.assert_manifest(run_cfg)
+        benchmark = primary_benchmark(run_cfg, frames, start=run["started_at"])
+        report = collect_run_report(run_cfg, ledger, marks, benchmark)
+        if args.json:
+            import json
+
+            print(json.dumps(report, indent=2, default=str))
+        else:
+            print("\n" + render_run_report(report) + "\n")
+    finally:
+        ledger.close()
+
+
+def cmd_portfolio_backtest(args, cfg):
+    """Replay the frozen baseline as one synchronized, cash-constrained portfolio."""
+    import json
+
+    from .run2.portfolio import (
+        block_bootstrap_mean_ci,
+        deflated_sharpe_probability,
+        primary_benchmark,
+        simulate_portfolio,
+    )
+
+    run_cfg, ledger, service = _run2(args, with_broker=False)
+    try:
+        frames = _run2_bars(run_cfg, cfg, refresh=args.refresh, recent=False)
+        simulation = simulate_portfolio(
+            run_cfg, {symbol: frame for symbol, frame in frames.items() if symbol != "SPY"}
+        )
+        benchmark = primary_benchmark(run_cfg, frames)
+        sells = (
+            simulation.trades.loc[simulation.trades["side"] == "sell", "realized_pl"]
+            if not simulation.trades.empty else pd.Series(dtype=float)
+        )
+        ci = block_bootstrap_mean_ci(sells, confidence=0.90)
+        summary = {
+            **simulation.metrics,
+            "expectancy_ci90": list(ci),
+            "deflated_sharpe_probability": deflated_sharpe_probability(
+                simulation.equity.pct_change().dropna(), len(run_cfg.research.arms)
+            ),
+            "benchmark_return_pct": (
+                (float(benchmark.iloc[-1]) / run_cfg.starting_equity - 1) * 100
+                if len(benchmark) else 0.0
+            ),
+            "config_hash": run_cfg.fingerprint,
+            "data_source": "alpaca",
+        }
+        output = RESULTS_DIR / run_cfg.run_id / "portfolio-backtest"
+        output.mkdir(parents=True, exist_ok=True)
+        simulation.equity.rename_axis("date").to_csv(output / "equity.csv")
+        simulation.trades.to_csv(output / "trades.csv", index=False)
+        simulation.decisions.to_csv(output / "decisions.csv", index=False)
+        benchmark.rename_axis("date").to_csv(output / "benchmark.csv")
+        (output / "summary.json").write_text(json.dumps(summary, indent=2, default=str))
+        print(f"\nFrozen synchronized portfolio replay ({summary['data_source']})")
+        for key, value in summary.items():
+            print(f"  {key}: {value}")
+        print(f"  artifacts: {output}\n")
+    finally:
+        ledger.close()
 
 
 # --------------------------------------------------------------------------- #
@@ -525,12 +772,56 @@ def build_parser() -> argparse.ArgumentParser:
     pscan.add_argument("--notional", type=float, help="$ per new position (default from config)")
     pscan.add_argument("--stop-loss", type=float, help="close if position falls this %% (default from config; 0=off)")
     pscan.add_argument("--dry-run", action="store_true", help="show actions but place no orders")
+    pscan.add_argument("--run-id", help="use the frozen auditable run workflow")
+    pscan.add_argument("--run-config", help="frozen run manifest (default config/run2.yaml)")
     pscan.set_defaults(func=cmd_paper_scan)
 
     pstops = sub.add_parser("paper-stops", help="Check open positions and close any breaching the stop-loss (run often)")
     pstops.add_argument("--stop-loss", type=float, help="close if position falls this %% (default from config; 0=off)")
     pstops.add_argument("--dry-run", action="store_true", help="show breaches but close nothing")
+    pstops.add_argument("--run-id", help="use fill-ledger cost basis for a frozen run")
+    pstops.add_argument("--run-config", help="frozen run manifest (default config/run2.yaml)")
     pstops.set_defaults(func=cmd_paper_stops)
+
+    ri = sub.add_parser("run-init", help="initialize a frozen paper-only experiment")
+    ri.add_argument("--run-id", default="run2")
+    ri.add_argument("--run-config", help="frozen run manifest (default config/run2.yaml)")
+    ri.set_defaults(func=cmd_run_init)
+
+    cc = sub.add_parser("collect-context", help="capture point-in-time regime and news features")
+    cc.add_argument("--run-id", default="run2")
+    cc.add_argument("--run-config", help="frozen run manifest (default config/run2.yaml)")
+    cc.add_argument("--refresh", action="store_true", help="refresh historical inputs")
+    cc.add_argument("--skip-news", action="store_true", help="collect regime inputs without FinBERT news")
+    cc.add_argument("--skip-sec", action="store_true", help="skip official SEC filing collection")
+    cc.set_defaults(func=cmd_collect_context)
+
+    ei = sub.add_parser("execute-intents", help="execute frozen baseline intents with adverse-gap protection")
+    ei.add_argument("--run-id", default="run2")
+    ei.add_argument("--run-config", help="frozen run manifest (default config/run2.yaml)")
+    ei.add_argument("--asset", choices=["crypto", "stock"])
+    ei.add_argument("--dry-run", action="store_true")
+    ei.set_defaults(func=cmd_execute_intents)
+
+    rr = sub.add_parser("reconcile", help="ingest paper fills/fees and reconcile the frozen run")
+    rr.add_argument("--run-id", default="run2")
+    rr.add_argument("--run-config", help="frozen run manifest (default config/run2.yaml)")
+    rr.set_defaults(func=cmd_reconcile_run)
+
+    rp = sub.add_parser("run-report", help="render portfolio and statistical Run 2 metrics")
+    rp.add_argument("--run-id", default="run2")
+    rp.add_argument("--run-config", help="frozen run manifest (default config/run2.yaml)")
+    rp.add_argument("--json", action="store_true")
+    rp.set_defaults(func=cmd_run_report)
+
+    pb = sub.add_parser(
+        "portfolio-backtest",
+        help="replay the frozen baseline as a synchronized cash-constrained portfolio",
+    )
+    pb.add_argument("--run-id", default="run2")
+    pb.add_argument("--run-config", help="frozen run manifest (default config/run2.yaml)")
+    pb.add_argument("--refresh", action="store_true", help="refresh Alpaca historical bars")
+    pb.set_defaults(func=cmd_portfolio_backtest)
 
     er = sub.add_parser("email-report", help="Email the full daily update (account, signals, results)")
     er.add_argument("--dry-run", action="store_true", help="render the email but don't send it")
@@ -553,6 +844,16 @@ def main(argv=None):
         args.func(args, cfg)
     except BrokerError as e:
         raise SystemExit(f"\nPaper trading error: {e}\n")
+    except Exception as e:
+        from .data.alpaca import AlpacaDataError
+        from .run2.config import RunConfigError
+        from .run2.context import ContextError
+        from .run2.ledger import LedgerError
+        from .run2.service import RunSafetyError
+
+        if isinstance(e, (AlpacaDataError, RunConfigError, ContextError, LedgerError, RunSafetyError)):
+            raise SystemExit(f"\nRun 2 error: {e}\n") from e
+        raise
 
 
 if __name__ == "__main__":

@@ -10,6 +10,7 @@
 # both strategies are regime-dependent — just the better-supported of the two.
 set -u
 STRATEGY="sma_cross"
+RUN_ID="run2"
 
 # Repo root = parent of this script's directory.
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -28,9 +29,31 @@ EXTRA=""
   echo "Daily paper run: $(date)"
   echo "strategy=$STRATEGY  repo=$REPO_DIR  dry_run=${DRY_RUN:-0}"
 
-  # The CLI loads .env from the working directory, so keys are picked up here.
-  OUT="$("$REPO_DIR/.venv/bin/money" paper-scan --strategy "$STRATEGY" $EXTRA 2>&1)"
-  rc=$?
+  # Capture point-in-time research inputs first. Context is shadow-only, so a
+  # provider/model failure is loud but cannot prevent the frozen baseline scan.
+  CONTEXT_OUT="$("$REPO_DIR/.venv/bin/money" collect-context --run-id "$RUN_ID" 2>&1)"
+  context_rc=$?
+  if [ "$context_rc" -ne 0 ]; then
+    CONTEXT_OUT="$(printf 'CONTEXT WARNING (exit %s):\n%s' "$context_rc" "$CONTEXT_OUT")"
+  elif [ "${DRY_RUN:-0}" != "1" ]; then
+    heartbeat "$REPO_DIR/results/.last_success_context"
+  fi
+
+  SCAN_OUT="$("$REPO_DIR/.venv/bin/money" paper-scan --run-id "$RUN_ID" --strategy "$STRATEGY" $EXTRA 2>&1)"
+  scan_rc=$?
+  EXEC_OUT="$("$REPO_DIR/.venv/bin/money" execute-intents --run-id "$RUN_ID" --asset crypto $EXTRA 2>&1)"
+  exec_rc=$?
+  if [ "${DRY_RUN:-0}" = "1" ]; then
+    RECON_OUT="dry run — reconciliation skipped"
+    reconcile_rc=0
+  else
+    RECON_OUT="$("$REPO_DIR/.venv/bin/money" reconcile --run-id "$RUN_ID" 2>&1)"
+    reconcile_rc=$?
+  fi
+  OUT="$(printf '%s\n\n%s\n\n%s\n\n%s' "$CONTEXT_OUT" "$SCAN_OUT" "$EXEC_OUT" "$RECON_OUT")"
+  rc=$scan_rc
+  [ "$exec_rc" -ne 0 ] && rc=$exec_rc
+  [ "$reconcile_rc" -ne 0 ] && rc=$reconcile_rc
   echo "$OUT"
   echo "Exit code: $rc"
 
@@ -41,10 +64,8 @@ EXTRA=""
       --alert-title "daily paper-scan FAILED (exit $rc)" || true
   else
     heartbeat "$REPO_DIR/results/.last_success_paperscan"
-    placed="$(printf '%s\n' "$OUT" | grep -oE '^[0-9]+ order' | grep -oE '^[0-9]+' | head -1)"
-    if [ "${placed:-0}" != "0" ] && [ "${DRY_RUN:-0}" != "1" ]; then
-      notify "money lab" "Daily scan placed $placed order(s)"
-    fi
+    submitted="$(printf '%s\n' "$EXEC_OUT" | grep -c "'action': 'submitted'" || true)"
+    [ "${submitted:-0}" != "0" ] && notify "money lab" "Crypto execution submitted $submitted order(s)"
     # Full email digest: account, positions, today's signals, backtest alpha,
     # system health. Real runs only; preview anytime with:
     #   money email-report --dry-run
