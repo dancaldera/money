@@ -31,6 +31,10 @@ except ImportError:  # pragma: no cover
     load_dotenv = None
 
 CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "settings.yaml"
+# The project's .env lives at the repo root; loading it explicitly lets the
+# `money` command work from any directory (e.g. via a PATH symlink), not just
+# from the repo root where a bare load_dotenv() would find it.
+REPO_DOTENV = Path(__file__).resolve().parents[2] / ".env"
 
 
 # --------------------------------------------------------------------------- #
@@ -536,7 +540,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv=None):
     if load_dotenv is not None:
-        load_dotenv()
+        load_dotenv()                      # ./.env when run from the repo root
+        if REPO_DOTENV.exists():           # repo .env regardless of cwd
+            load_dotenv(REPO_DOTENV)
     parser = build_parser()
     args = parser.parse_args(argv)
     cfg = load_config()
