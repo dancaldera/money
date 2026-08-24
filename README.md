@@ -92,6 +92,27 @@ money paper-scan --strategy rsi_meanrev --dry-run   # preview, place nothing
 running it repeatedly never stacks duplicate buys. Every evaluation is appended to
 `results/paper_journal.csv`.
 
+### Email updates
+
+The daily scheduled run emails you a **complete update**: paper-account equity and
+open positions with live P&L, every symbol's signal from the latest scan,
+backtest alpha vs buy & hold per symbol ("is the strategy improving?"), system
+health of both schedules, and insights. Short alert emails go out immediately if
+a stop-loss fires or a scheduled run fails — so problems reach your inbox, not
+just a log file.
+
+Setup: pick any SMTP provider (Gmail works well — create an App Password at
+<https://myaccount.google.com/apppasswords>), then uncomment and fill the
+`EMAIL_*` block in `.env` (see `.env.example`). Test it:
+
+```bash
+money email-report --dry-run   # render the digest locally, send nothing
+money email-report             # send it for real
+```
+
+Leave the `EMAIL_*` variables unset and everything else works exactly as before
+(emailing is best-effort and never fails a trading run).
+
 ### Automated daily runs
 
 Two schedules drive the paper account (both wrappers append to logs under

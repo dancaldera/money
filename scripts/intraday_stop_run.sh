@@ -30,11 +30,18 @@ EXTRA=""
 
   if [ "$rc" -ne 0 ]; then
     notify "money lab" "Stop monitor FAILED (exit $rc) — check results/stop_monitor.log"
+    # Immediate alert email with the failure detail (best-effort; never fails the run).
+    printf '%s\n' "$OUT" | "$REPO_DIR/.venv/bin/money" email-report \
+      --alert-title "stop monitor FAILED (exit $rc)" || true
   else
     heartbeat "$REPO_DIR/results/.last_success_stopmonitor"
     stopped="$(printf '%s\n' "$OUT" | grep -oE '^[0-9]+ position' | grep -oE '^[0-9]+' | head -1)"
     if [ "${stopped:-0}" != "0" ] && [ "${DRY_RUN:-0}" != "1" ]; then
       notify "money lab" "Stop-loss closed $stopped position(s)"
+      # Immediate alert email so the stop is visible in the inbox, not just in
+      # this log (best-effort).
+      printf '%s\n' "$OUT" | "$REPO_DIR/.venv/bin/money" email-report \
+        --alert-title "stop-loss closed $stopped position(s)" || true
     fi
   fi
 } >> "$LOG" 2>&1

@@ -93,6 +93,7 @@ under the `[Service]` heading (drop-in override).
 | Success heartbeats (unix timestamps) | `results/.last_success_paperscan`, `results/.last_success_stopmonitor` |
 | Paper-trade decision journal | `results/paper_journal.csv` |
 | Desktop notification on failure / order placed | via `notify-send` |
+| **Email digest** after each real daily run; **alert email** on stop-loss or failure | via `money email-report` (`EMAIL_*` keys in `.env`) |
 
 A stale heartbeat file (timestamp far in the past) means the schedule has not
 succeeded recently — check the matching log first.

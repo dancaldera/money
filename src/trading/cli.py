@@ -21,6 +21,7 @@ from .backtest import run_backtest
 from .data import drop_forming_bar, fetch_crypto, fetch_equity, load_or_fetch
 from .live import BrokerError, PaperBroker, evaluate, stop_breached
 from .reporting import RESULTS_DIR, record_paper_action, record_run, summarize, write_dashboard
+from .reporting import email_report as email_report_mod
 from .signals import get_signal
 from .strategies import STRATEGIES, get_strategy
 
@@ -262,6 +263,16 @@ def cmd_dashboard(args, cfg):
         print("Opened in your browser.\n")
     else:
         print(f"Open it with: open {path}\n")
+
+
+def cmd_email_report(args, cfg):
+    """Send the full daily update by email (--dry-run previews it locally)."""
+    if args.alert_title:
+        rc = email_report_mod.run_alert_from_stdin(args.alert_title)
+    else:
+        rc = email_report_mod.run_digest(dry_run=args.dry_run)
+    if rc:
+        raise SystemExit(rc)
 
 
 def cmd_signal(args, cfg):
@@ -513,6 +524,12 @@ def build_parser() -> argparse.ArgumentParser:
     pstops.add_argument("--stop-loss", type=float, help="close if position falls this %% (default from config; 0=off)")
     pstops.add_argument("--dry-run", action="store_true", help="show breaches but close nothing")
     pstops.set_defaults(func=cmd_paper_stops)
+
+    er = sub.add_parser("email-report", help="Email the full daily update (account, signals, results)")
+    er.add_argument("--dry-run", action="store_true", help="render the email but don't send it")
+    er.add_argument("--alert-title",
+                    help="send a short alert instead of the digest, reading the body from stdin")
+    er.set_defaults(func=cmd_email_report)
 
     return p
 

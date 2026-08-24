@@ -36,11 +36,20 @@ EXTRA=""
 
   if [ "$rc" -ne 0 ]; then
     notify "money lab" "Daily paper-scan FAILED (exit $rc) — check results/paper_scan.log"
+    # Immediate alert email with the failure detail (best-effort; never fails the run).
+    printf '%s\n' "$OUT" | "$REPO_DIR/.venv/bin/money" email-report \
+      --alert-title "daily paper-scan FAILED (exit $rc)" || true
   else
     heartbeat "$REPO_DIR/results/.last_success_paperscan"
     placed="$(printf '%s\n' "$OUT" | grep -oE '^[0-9]+ order' | grep -oE '^[0-9]+' | head -1)"
     if [ "${placed:-0}" != "0" ] && [ "${DRY_RUN:-0}" != "1" ]; then
       notify "money lab" "Daily scan placed $placed order(s)"
+    fi
+    # Full email digest: account, positions, today's signals, backtest alpha,
+    # system health. Real runs only; preview anytime with:
+    #   money email-report --dry-run
+    if [ "${DRY_RUN:-0}" != "1" ]; then
+      "$REPO_DIR/.venv/bin/money" email-report || true
     fi
   fi
 } >> "$LOG" 2>&1
