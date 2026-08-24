@@ -266,7 +266,10 @@ def cmd_dashboard(args, cfg):
         webbrowser.open(path.as_uri())
         print("Opened in your browser.\n")
     else:
-        print(f"Open it with: open {path}\n")
+        import shutil
+
+        opener = shutil.which("open") or shutil.which("xdg-open")
+        print(f"Open it with: {f'{opener} {path}' if opener else path}\n")
 
 
 def cmd_email_report(args, cfg):
