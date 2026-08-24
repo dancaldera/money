@@ -92,13 +92,50 @@ money paper-scan --strategy rsi_meanrev --dry-run   # preview, place nothing
 running it repeatedly never stacks duplicate buys. Every evaluation is appended to
 `results/paper_journal.csv`.
 
-### Automated daily runs (macOS launchd)
+### Automated daily runs
 
-A launchd agent runs `scripts/daily_paper_run.sh` every day at **18:05 local time**.
-In Mexico City this is just after the 00:00 UTC crypto daily close, so crypto
-signals use the candle that just finished instead of one that is nearly a day
-old. It is also after the US equity close. The script calls `paper-scan` for the
-strategy selected inside it and appends output to `results/paper_scan.log`.
+Two schedules drive the paper account (both wrappers append to logs under
+`results/` and send a desktop notification on failure):
+
+- **Daily scan** — `scripts/daily_paper_run.sh`, once a day at **18:05 local
+  time**. In Mexico City this is just after the 00:00 UTC crypto daily close,
+  so crypto signals use the candle that just finished instead of one that is
+  nearly a day old; it is also after the US equity close.
+- **Intraday stop monitor** — `scripts/intraday_stop_run.sh`, every **30
+  minutes**, closing any open position that has fallen through the stop-loss
+  threshold instead of waiting for the daily signal scan.
+
+Change which strategy runs via `STRATEGY` in `scripts/daily_paper_run.sh`.
+
+#### Linux (systemd user timers) — this machine
+
+Units live in `scripts/systemd/`; install and enable with:
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp scripts/systemd/*.service scripts/systemd/*.timer ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now money-paperscan.timer money-stopmonitor.timer
+
+# Check they're scheduled (next fire times)
+systemctl --user list-timers 'money-*'
+
+# Test the exact scheduled runs without placing orders
+DRY_RUN=1 bash scripts/daily_paper_run.sh
+DRY_RUN=1 bash scripts/intraday_stop_run.sh
+
+# Disable both schedules
+systemctl --user disable --now money-paperscan.timer money-stopmonitor.timer
+```
+
+`Persistent=true` fires a missed run after boot/wake (the stop monitor also
+checks ~10 min after login). If the project moves, update `WorkingDirectory`
+and `ExecStart` in the two `.service` files and reinstall them.
+
+> Full details — concept map from launchd, testing without orders, log/heartbeat
+> locations, and troubleshooting: **[docs/linux-systemd.md](docs/linux-systemd.md)**.
+
+#### macOS (launchd)
 
 ```bash
 # Install / reload the schedule
@@ -108,17 +145,13 @@ launchctl load -w ~/Library/LaunchAgents/com.money.paperscan.plist
 # Check it's registered
 launchctl list | grep com.money.paperscan
 
-# Test the exact scheduled run without placing orders
-DRY_RUN=1 bash scripts/daily_paper_run.sh
-
 # Disable the schedule
 launchctl unload -w ~/Library/LaunchAgents/com.money.paperscan.plist
 ```
 
-To change which strategy runs or the time, edit `STRATEGY` in
-`scripts/daily_paper_run.sh` or `StartCalendarInterval` in the plist (then reload).
-Note: a laptop must be awake at 18:05; launchd will run a missed job once the
-machine wakes.
+To change the time on macOS, edit `StartCalendarInterval` in the plist (then
+reload). Note: a laptop must be awake at 18:05; launchd will run a missed job
+once the machine wakes.
 
 ### Starting a clean paper run
 
@@ -129,19 +162,16 @@ machine wakes.
 4. Set `paper.notional` in `config/settings.yaml` to the intended position size.
    The current `$1,000` is 1% of a `$100,000` account; scale it when testing a
    different starting balance.
-5. Run `DRY_RUN=1 bash scripts/daily_paper_run.sh`, then reload both launchd jobs
-   only after the output is correct.
+5. Run `DRY_RUN=1 bash scripts/daily_paper_run.sh`, then re-enable the schedules
+   (systemd timers on Linux, launchd on macOS) only after the output is correct.
 
 Keep one strategy, watchlist, position size, and stop rule unchanged for an
 entire run so the result can be attributed to a stable experiment.
 
-> ⚠️ **Keep this project OUT of `~/Documents`, `~/Desktop`, and `~/Downloads`.**
-> Those are macOS privacy-protected (TCC) folders. Manual terminal runs work there
-> (they inherit Terminal's permissions), but **launchd background jobs are blocked**
-> from reading them and fail with `Operation not permitted`. This project lives at
-> `~/money` for exactly that reason. If you ever move it, keep it under a
-> non-protected path (home root, `~/Developer`, `~/Projects`, …) and update the
-> three absolute paths in the plist.
+> ⚠️ **macOS only: keep the project OUT of `~/Documents`, `~/Desktop`, and
+> `~/Downloads`.** Those are macOS privacy-protected (TCC) folders — launchd
+> background jobs are blocked from reading them. On **Linux** (including this
+> machine) no such restriction exists; living under `~/Documents` is fine.
 
 `paper-run` fetches recent bars (via the same yfinance fetchers), computes the
 strategy's BUY/SELL/HOLD signal on the latest bar, checks whether you already hold the

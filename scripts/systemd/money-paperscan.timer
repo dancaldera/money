@@ -1,0 +1,13 @@
+[Unit]
+Description=money lab — daily paper-scan schedule (18:05 America/Mexico_City)
+
+[Timer]
+# 18:05 local: just after the 00:00 UTC crypto daily close, after the US equity
+# close — the latest closed crypto candle is fresh. Persistent=true fires a
+# missed run on wake/boot (same behaviour launchd gave the Mac).
+OnCalendar=*-*-* 18:05:00
+Persistent=true
+Unit=money-paperscan.service
+
+[Install]
+WantedBy=timers.target

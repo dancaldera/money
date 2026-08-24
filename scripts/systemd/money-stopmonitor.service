@@ -1,0 +1,10 @@
+[Unit]
+Description=money lab — intraday stop-loss monitor (Alpaca PAPER account, fake money)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Repo root — update here if the project ever moves.
+WorkingDirectory=/home/danz/Documents/personal/money
+ExecStart=/bin/bash /home/danz/Documents/personal/money/scripts/intraday_stop_run.sh

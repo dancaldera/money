@@ -1,0 +1,15 @@
+[Unit]
+Description=money lab — stop-loss monitor schedule (every 30 minutes)
+
+[Timer]
+# Wall-clock :00 and :30 so checks are predictable. Persistent=true catches a
+# run missed while the machine slept. The first check also happens shortly
+# after login via the separate OnStartupSec trigger.
+OnCalendar=*:0/30
+OnStartupSec=10min
+Persistent=true
+AccuracySec=15s
+Unit=money-stopmonitor.service
+
+[Install]
+WantedBy=timers.target

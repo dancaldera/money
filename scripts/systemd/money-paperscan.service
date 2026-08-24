@@ -1,0 +1,12 @@
+[Unit]
+Description=money lab — daily paper-scan (Alpaca PAPER account, fake money)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Repo root — update here if the project ever moves.
+WorkingDirectory=/home/danz/Documents/personal/money
+ExecStart=/bin/bash /home/danz/Documents/personal/money/scripts/daily_paper_run.sh
+# The wrapper writes results/paper_scan.log itself; journal captures leftovers.
+# Set DRY_RUN=1 preview without orders:  systemctl --user edit money-paperscan
