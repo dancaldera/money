@@ -129,7 +129,12 @@ def _pct(v: float, signed: bool = True) -> str:
 
 def build_digest(ctx: dict | None = None) -> tuple[str, str, str]:
     """Compose the daily update. Returns (subject, plain-text body, HTML body)."""
-    ctx = ctx or collect_context()
+    ctx = dict(ctx or collect_context())
+    # The dashboard's generic "Reminder: paper money only…" insight would
+    # duplicate the email's own footer disclaimer — drop it here.
+    ctx["insights"] = [
+        s for s in ctx.get("insights", []) if "paper money only" not in s.lower()
+    ]
     acct = ctx.get("account")
     activity = ctx.get("activity", {})
     actions = sum(v for k, v in activity.get("counts", {}).items() if k != "none")
