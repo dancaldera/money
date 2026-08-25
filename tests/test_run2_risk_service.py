@@ -159,6 +159,33 @@ def test_adverse_gap_expires_without_submitting(tmp_path):
         ledger.close()
 
 
+def test_stock_buy_limit_snaps_to_a_penny(tmp_path):
+    cfg, ledger = initialized_ledger(tmp_path)
+    broker = FakeBroker(current=355.0)
+    try:
+        ledger.record_decision(
+            {
+                "run_id": cfg.run_id,
+                "portfolio": "baseline",
+                "symbol": "MSFT",
+                "asset": "stock",
+                "strategy": cfg.strategy.name,
+                "bar_end": "2026-08-23T00:00:00+00:00",
+                "signal": "BUY",
+                "signal_price": "348.94",
+                "notional": "625",
+                "action": "buy_intent",
+                "status": "pending",
+                "config_hash": cfg.fingerprint,
+            }
+        )
+        out = Run2Service(cfg, ledger, broker).execute_pending("stock")
+        assert out[0]["action"] == "submitted"
+        assert broker.buys == [("MSFT", 355.92)]
+    finally:
+        ledger.close()
+
+
 def test_halt_invalidates_a_preexisting_buy_intent(tmp_path):
     cfg, ledger = initialized_ledger(tmp_path)
     broker = FakeBroker(current=100.0)

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 from datetime import datetime
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
 
 from alpaca.data.historical import CryptoHistoricalDataClient, StockHistoricalDataClient
@@ -26,6 +27,23 @@ class BrokerError(RuntimeError):
 def _position_symbol(symbol: str) -> str:
     """Alpaca reports/closes positions without the slash (BTC/USD -> BTCUSD)."""
     return symbol.replace("/", "")
+
+
+def quantize_limit_price(price: float, asset: str) -> float:
+    """Snap a limit price to Alpaca's minimum increment.
+
+    US equities follow SEC Rule 612 (the sub-penny rule): $0.01 at or above
+    $1, $0.0001 below $1. Crypto keeps 8 decimals, matching the previous
+    paper-order rounding.
+    """
+    value = Decimal(str(price))
+    if asset == "crypto":
+        quantum = Decimal("0.00000001")
+    elif abs(value) < Decimal("1"):
+        quantum = Decimal("0.0001")
+    else:
+        quantum = Decimal("0.01")
+    return float(value.quantize(quantum, rounding=ROUND_HALF_UP))
 
 
 class PaperBroker:
@@ -163,12 +181,15 @@ class PaperBroker:
         client_order_id: str,
     ) -> dict[str, Any]:
         """Submit a price-capped paper buy; no live endpoint is available."""
+        # Notional equity orders are fractional, and Alpaca only accepts DAY
+        # for those. Crypto keeps IOC so an unfilled gap-cap order does not rest.
+        tif = TimeInForce.IOC if asset == "crypto" else TimeInForce.DAY
         req = LimitOrderRequest(
             symbol=symbol,
             notional=round(float(notional), 2),
-            limit_price=round(float(limit_price), 8),
+            limit_price=quantize_limit_price(limit_price, asset),
             side=OrderSide.BUY,
-            time_in_force=TimeInForce.IOC,
+            time_in_force=tif,
             client_order_id=client_order_id,
         )
         return self._order_dict(self.client.submit_order(req))

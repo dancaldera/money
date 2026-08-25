@@ -10,7 +10,7 @@ from typing import Any, Mapping
 
 import pandas as pd
 
-from ..live.broker import PaperBroker
+from ..live.broker import PaperBroker, quantize_limit_price
 from ..strategies.base import sma_cross_signal
 from .config import RunConfig
 from .ledger import RunLedger, utc_now
@@ -186,12 +186,13 @@ class Run2Service:
                     out.append({"decision_id": d["decision_id"], "action": "expired_halt"})
                     continue
                 gap = self.cfg.gap_limit_pct(asset) / 100
-                limit_price = float(d["signal_price"]) * (1 + gap)
+                raw_limit = float(d["signal_price"]) * (1 + gap)
                 current = self.broker.latest_price(d["symbol"], asset) if self.broker else float(d["signal_price"])
-                if current > limit_price:
+                if current > raw_limit:
                     self.ledger.set_decision_status(d["decision_id"], "expired", f"adverse_gap:{current:.8f}")
                     out.append({"decision_id": d["decision_id"], "action": "expired_gap", "price": current})
                     continue
+                limit_price = quantize_limit_price(raw_limit, asset)
                 if dry_run:
                     out.append({"decision_id": d["decision_id"], "action": "would_buy", "limit_price": limit_price})
                     continue
