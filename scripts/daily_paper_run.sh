@@ -31,7 +31,11 @@ EXTRA=""
 
   # Capture point-in-time research inputs first. Context is shadow-only, so a
   # provider/model failure is loud but cannot prevent the frozen baseline scan.
-  CONTEXT_OUT="$("$REPO_DIR/.venv/bin/money" collect-context --run-id "$RUN_ID" 2>&1)"
+  # FinBERT news needs the optional [research] extra (torch/transformers, ~3 GB);
+  # without it, degrade to regime-only context instead of warning every day.
+  CONTEXT_ARGS=""
+  "$REPO_DIR/.venv/bin/python" -c "import transformers" >/dev/null 2>&1 || CONTEXT_ARGS="--skip-news"
+  CONTEXT_OUT="$("$REPO_DIR/.venv/bin/money" collect-context --run-id "$RUN_ID" $CONTEXT_ARGS 2>&1)"
   context_rc=$?
   if [ "$context_rc" -ne 0 ]; then
     CONTEXT_OUT="$(printf 'CONTEXT WARNING (exit %s):\n%s' "$context_rc" "$CONTEXT_OUT")"
@@ -64,7 +68,10 @@ EXTRA=""
       --alert-title "daily paper-scan FAILED (exit $rc)" || true
   else
     heartbeat "$REPO_DIR/results/.last_success_paperscan"
-    submitted="$(printf '%s\n' "$EXEC_OUT" | grep -c 'action=submitted' || true)"
+    # execute-intents prints Python dicts ({"action": "submitted"}), while
+    # paper-stops prints `action=stopped`; match either form so the notify
+    # never silently dies on a CLI output change.
+    submitted="$(printf '%s\n' "$EXEC_OUT" | grep -cE "('action': 'submitted'|action=submitted)" || true)"
     [ "${submitted:-0}" != "0" ] && notify "money lab" "Crypto execution submitted $submitted order(s)"
     # Full email digest: account, positions, today's signals, backtest alpha,
     # system health. Real runs only; preview anytime with:

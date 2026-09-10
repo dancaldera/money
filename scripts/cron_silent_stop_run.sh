@@ -19,7 +19,8 @@ fi
 if printf '%s\n' "$TAIL" | grep -qE 'action=(stopped|would_stop)'; then
   printf '🔻 money · stop disparado\n%s\n' "$TAIL"
 fi
-if printf '%s\n' "$TAIL" | grep -qE 'halted=True'; then
+# halt state appears as `halted: True` (reconcile) or `halted=False` (paper-stops)
+if printf '%s\n' "$TAIL" | grep -qE 'halted[:=] *True'; then
   printf '🛑 money · run HALTED (revisar results/stop_monitor.log)\n%s\n' "$TAIL"
 fi
 exit 0
