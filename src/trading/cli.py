@@ -542,11 +542,38 @@ def cmd_paper_scan(args, cfg):
 def cmd_run_init(args, cfg):
     run_cfg, ledger, service = _run2(args, with_broker=True)
     try:
+        if args.resume:
+            result = service.resume()
+            print(f"\nResumed frozen paper run {run_cfg.run_id} (mid-history account)")
+            print(f"  equity:   ${result['equity']:,.2f}")
+            print(f"  cash:     ${result['cash']:,.2f}")
+            print(f"  drawdown: {result['drawdown_pct']:.4f}% from the ${run_cfg.starting_equity:,.0f} manifest")
+            for imp in result["imported"]:
+                print(
+                    f"  imported position: {imp['symbol']} [{imp['asset']}] "
+                    f"qty={imp['qty']} avg={imp['avg_entry']}"
+                )
+            for warning in result["warnings"]:
+                print(f"  warning: {warning}")
+            print(f"  manifest: {run_cfg.fingerprint}")
+            print(f"  ledger:   {ledger.path}\n")
+            return
         account = service.initialize()
         print(f"\nInitialized frozen paper run {run_cfg.run_id}")
         print(f"  equity:   ${account['equity']:,.2f}")
         print(f"  manifest: {run_cfg.fingerprint}")
         print(f"  ledger:   {ledger.path}\n")
+    finally:
+        ledger.close()
+
+
+def cmd_run_health(args, cfg):
+    """Read-only run health for the watchdog: halted, equity, drawdown, positions."""
+    run_cfg, ledger, service = _run2(args, with_broker=False)
+    try:
+        info = service.health()
+        for key, value in info.items():
+            print(f"  {key}: {value}")
     finally:
         ledger.close()
 
@@ -786,7 +813,17 @@ def build_parser() -> argparse.ArgumentParser:
     ri = sub.add_parser("run-init", help="initialize a frozen paper-only experiment")
     ri.add_argument("--run-id", default="run2")
     ri.add_argument("--run-config", help="frozen run manifest (default config/run2.yaml)")
+    ri.add_argument(
+        "--resume",
+        action="store_true",
+        help="bind to an already-traded paper account; import open positions as baseline",
+    )
     ri.set_defaults(func=cmd_run_init)
+
+    rh = sub.add_parser("health", help="read-only run health: halted, equity, drawdown")
+    rh.add_argument("--run-id", default="run2")
+    rh.add_argument("--run-config", help="frozen run manifest (default config/run2.yaml)")
+    rh.set_defaults(func=cmd_run_health)
 
     cc = sub.add_parser("collect-context", help="capture point-in-time regime and news features")
     cc.add_argument("--run-id", default="run2")

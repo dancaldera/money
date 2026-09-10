@@ -96,6 +96,119 @@ class Run2Service:
         self.record_account_snapshot(account)
         return account
 
+    def resume(self) -> dict[str, Any]:
+        """Bind the frozen run to an already-traded paper account (mid-history restart).
+
+        ``initialize()`` demands a clean account at exactly the manifest equity with no
+        order history, which can never pass again once the desk has traded. ``resume()``
+        binds the frozen manifest to the account as it is right now and imports every
+        open position as a simulated baseline fill, so broker qty == ledger qty and
+        ``reconcile`` has nothing unknown to halt on. From this point the loop is
+        identical to a fresh init: every new broker order must map to a ledger order.
+
+        The frozen manifest is untouched — only the run's starting point moves.
+        """
+        if self.broker is None:
+            raise RunSafetyError("A paper broker is required to resume a run")
+        account = self.broker.account()
+        positions = self.broker.positions()
+        if self.ledger.run(self.cfg.run_id) is not None:
+            raise RunSafetyError(f"Run {self.cfg.run_id!r} is already initialized")
+        self.ledger.initialize_run(self.cfg, account["id"])
+        imported: list[dict[str, Any]] = []
+        warnings: list[str] = []
+        for p in positions:
+            symbol, asset = _asset_from_broker_symbol(self.cfg, str(p["symbol"]))
+            if not asset:
+                asset = "crypto" if "/" in str(p["symbol"]) else "stock"
+                warnings.append(
+                    f"position_outside_universe:{symbol} — seeded so broker qty matches, "
+                    "but the frozen scan will not rotate it (stops still manage it)"
+                )
+            qty = Decimal(str(p["qty"]))
+            avg = Decimal(str(p["avg_entry"]))
+            if qty <= 0 or avg <= 0:
+                continue
+            now = utc_now()
+            notional = qty * avg
+            decision_id = self.ledger.record_decision(
+                {
+                    "run_id": self.cfg.run_id,
+                    "portfolio": "baseline",
+                    "symbol": symbol,
+                    "asset": asset,
+                    "strategy": self.cfg.strategy.name,
+                    "bar_end": now,
+                    "signal": "BUY",
+                    "signal_price": str(avg),
+                    "notional": str(notional),
+                    "action": "buy_intent",
+                    "reason": "resume_baseline",
+                    "status": "filled",
+                    "config_hash": self.cfg.fingerprint,
+                }
+            )
+            order_pk = self.ledger.record_order(
+                {
+                    "run_id": self.cfg.run_id,
+                    "decision_id": decision_id,
+                    "portfolio": "baseline",
+                    "client_order_id": f"{self.cfg.run_id}-resume-{decision_id[:12]}",
+                    "symbol": symbol,
+                    "asset": asset,
+                    "side": "buy",
+                    "requested_notional": str(notional),
+                    "limit_price": str(avg),
+                    "status": "filled",
+                    "submitted_at": now,
+                }
+            )
+            self.ledger.record_fill(
+                {
+                    "fill_id": f"resume-{decision_id}",
+                    "run_id": self.cfg.run_id,
+                    "order_pk": order_pk,
+                    "decision_id": decision_id,
+                    "portfolio": "baseline",
+                    "broker_order_id": None,
+                    "symbol": symbol,
+                    "asset": asset,
+                    "side": "buy",
+                    "qty": str(qty),
+                    "price": str(avg),
+                    "transaction_time": now,
+                    "simulated": 1,
+                }
+            )
+            imported.append(
+                {"symbol": symbol, "asset": asset, "qty": str(qty), "avg_entry": str(avg)}
+            )
+        snap = self.record_account_snapshot(account)
+        return {
+            "equity": account["equity"],
+            "cash": account["cash"],
+            "imported": imported,
+            "warnings": warnings,
+            "drawdown_pct": float(snap["drawdown_pct"]),
+        }
+
+    def health(self) -> dict[str, Any]:
+        """Read-only ledger health: no broker, no writes. Used by the watchdog."""
+        run = self.ledger.assert_manifest(self.cfg)
+        history = self.ledger.equity_history(self.cfg.run_id)
+        snap = history[-1] if history else None
+        return {
+            "run_id": self.cfg.run_id,
+            "halted": self.ledger.is_halted(self.cfg.run_id),
+            "status": run["status"],
+            "halt_reason": run["halt_reason"],
+            "equity": float(snap["equity"]) if snap else None,
+            "drawdown_pct": float(snap["drawdown_pct"]) if snap else None,
+            "captured_at": snap["captured_at"] if snap else None,
+            "positions": len(self.ledger.positions(self.cfg.run_id)),
+            "fees": str(self.ledger.total_fees(self.cfg.run_id)),
+        }
+
     def scan(self, bars: Mapping[str, pd.DataFrame], record: bool = True) -> list[dict[str, Any]]:
         self.ledger.assert_manifest(self.cfg)
         results: list[dict[str, Any]] = []

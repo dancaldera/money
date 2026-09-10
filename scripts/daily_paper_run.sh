@@ -64,7 +64,7 @@ EXTRA=""
       --alert-title "daily paper-scan FAILED (exit $rc)" || true
   else
     heartbeat "$REPO_DIR/results/.last_success_paperscan"
-    submitted="$(printf '%s\n' "$EXEC_OUT" | grep -c "'action': 'submitted'" || true)"
+    submitted="$(printf '%s\n' "$EXEC_OUT" | grep -c 'action=submitted' || true)"
     [ "${submitted:-0}" != "0" ] && notify "money lab" "Crypto execution submitted $submitted order(s)"
     # Full email digest: account, positions, today's signals, backtest alpha,
     # system health. Real runs only; preview anytime with:

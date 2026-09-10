@@ -138,6 +138,11 @@ Leave the `EMAIL_*` variables unset and everything else works exactly as before
 
 ### Automated daily runs
 
+> On this Mac the schedule runs through **Hermes cron jobs**, not launchd — see
+> [docs/local-ops.md](docs/local-ops.md) for the live jobs, the silent watchdog
+> scripts and the mid-history `run-init --resume` binding. The launchd/systemd
+> instructions below remain for other machines.
+
 Three schedules drive the paper account (all wrappers append to logs under
 `results/` and send a desktop notification on failure):
 
