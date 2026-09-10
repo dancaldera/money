@@ -20,17 +20,20 @@ The macOS launchd agents were removed on purpose: one scheduler with visible sta
 
 | Job | Schedule | Mode |
 |---|---|---|
+| money · morning buy/hold/sell | every day at 09:00 | agent + `scripts/morning_brief.sh` (read-only resume in Hermes) |
 | money · daily paper run | every day at 17:00 | agent (terminal, workdir `~/money`) |
 | money · stop monitor (silencioso) | every 30 min | `no_agent` script |
 | money · health watchdog (silencioso) | every hour | `no_agent` script |
 | money · mejora diaria (agente) | every day at 08:00 | agent (objective: make money) |
 
-Inspect: `hermes cron list` / `cronjob_manage(action='list')`. Job output is saved
-locally (`deliver: local` — no messaging platform is connected).
+Inspect: `hermes cron list` / `cronjob_manage(action='list')`. Trading jobs
+save locally (`deliver: local`). The 09:00 buy/hold/sell briefing posts into
+the Hermes chat it was created from (continuable).
 
-Hermes runs cron scripts only from `~/.hermes/scripts/`, so two thin shims live
-there (`money_stop_monitor.sh`, `money_health.sh`) and `exec` the repo scripts
-(`scripts/cron_silent_*.sh`). Repo = single source of truth.
+Hermes runs cron scripts only from `~/.hermes/scripts/`, so thin shims live
+there (`money_stop_monitor.sh`, `money_health.sh`, `money_morning_brief.sh`)
+and `exec` the repo scripts (`scripts/cron_silent_*.sh`,
+`scripts/morning_brief.sh`). Repo = single source of truth.
 
 The silent jobs use the watchdog pattern: nothing printed = nothing sent. They speak
 only when a stop fires, the run halts, a heartbeat goes stale, or a wrapper fails.
@@ -41,6 +44,7 @@ and `scripts/systemd/`.
 ## Daily loop
 
 ```bash
+bash scripts/morning_brief.sh        # read-only 09:00 dump: health + Alpaca status + stops/scan dry-run
 bash scripts/daily_paper_run.sh      # context + closed-bar scan + crypto execute + reconcile
 bash scripts/execute_stock_intents.sh # guarded stock execution (09:31 ET on upstream timers)
 bash scripts/intraday_stop_run.sh    # 8% stop + reconcile (every 30 min)
@@ -48,8 +52,8 @@ bash scripts/health_check.sh         # heartbeats + halt state (hourly)
 DRY_RUN=1 bash scripts/daily_paper_run.sh   # preview, no ledger writes / no orders
 ```
 
-Logs: `results/paper_scan.log`, `results/stop_monitor.log`, `results/health.log`
-(rotation keeps 2000 lines). Heartbeats: `results/.last_success_*`.
+Logs: `results/paper_scan.log`, `results/stop_monitor.log`, `results/health.log`,
+`results/morning_brief.log` (rotation keeps 2000 lines). Heartbeats: `results/.last_success_*`.
 
 ## Mid-history account
 

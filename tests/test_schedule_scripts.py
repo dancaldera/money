@@ -55,3 +55,17 @@ def test_daily_wrapper_matches_dict_and_action_equals_submitted():
     text = (ROOT / "scripts" / "daily_paper_run.sh").read_text()
     assert "'action': 'submitted'" in text
     assert "action=submitted" in text
+
+
+def test_morning_brief_is_read_only_and_covers_the_desk():
+    """The 09:00 Hermes briefing must never place orders or write the ledger."""
+    text = (ROOT / "scripts" / "morning_brief.sh").read_text()
+    assert "paper-status" in text
+    assert "health --run-id" in text
+    assert "paper-stops --run-id" in text and "--dry-run" in text
+    assert "paper-scan --run-id" in text
+    assert "paper-scan --run-id \"$RUN_ID\" --strategy \"$STRATEGY\" --dry-run" in text
+    assert "execute-intents" not in text
+    assert "reconcile" not in text
+    assert "paper-close" not in text
+    assert "run-init" not in text
