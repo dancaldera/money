@@ -21,7 +21,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest"]
+dev = ["pytest", "pytest-cov"]
 research = ["transformers>=4.40", "torch>=2.2"]
 
 [project.scripts]
@@ -29,3 +29,11 @@ money = "trading.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.coverage.report]
+# NOTE: setting exclude_lines replaces coverage's defaults, so the
+# `# pragma: no cover` pattern must be repeated here explicitly.
+exclude_lines = [
+    "pragma: no cover",
+    'if __name__ == "__main__":',
+]
