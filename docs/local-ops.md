@@ -22,9 +22,19 @@ The macOS launchd agents were removed on purpose: one scheduler with visible sta
 |---|---|---|
 | money · morning buy/hold/sell | every day at 09:00 | agent + `scripts/morning_brief.sh` (read-only resume in Hermes) |
 | money · daily paper run | every day at 17:00 | agent (terminal, workdir `~/money`) |
+| money · daily scan catch-up (silencioso) | every day at 22:00 | `no_agent` script (`scripts/cron_catchup_daily.sh`), only runs the desk if today never scanned |
 | money · stop monitor (silencioso) | every 30 min | `no_agent` script |
 | money · health watchdog (silencioso) | every hour | `no_agent` script |
 | money · mejora diaria (agente) | every day at 08:00 | agent (objective: make money) |
+
+The 17:00 daily run is an **agent** job, so it can die before it ever reaches
+`daily_paper_run.sh` (model/API outage, credit exhaustion, inactivity timeout) and
+nothing trades. That is unrecoverable by design: `paper-scan` only evaluates the
+latest closed bar, so a fresh cross on the missed bar is never seen again. The
+22:00 catch-up guard closes that hole — it runs the wrapper only when today's
+`.last_success_paperscan` date is not today, which also makes it idempotent
+(a day that already scanned stays silent). Preview its decision with
+`CHECK_ONLY=1 bash scripts/cron_catchup_daily.sh`.
 
 Inspect: `hermes cron list` / `cronjob_manage(action='list')`. Trading jobs
 save locally (`deliver: local`). The 09:00 buy/hold/sell briefing posts into
@@ -49,6 +59,7 @@ bash scripts/daily_paper_run.sh      # context + closed-bar scan + crypto execut
 bash scripts/execute_stock_intents.sh # guarded stock execution (09:31 ET on upstream timers)
 bash scripts/intraday_stop_run.sh    # 8% stop + reconcile (every 30 min)
 bash scripts/health_check.sh         # heartbeats + halt state (hourly)
+bash scripts/cron_catchup_daily.sh   # 22:00 guard: runs the desk only if today never scanned
 DRY_RUN=1 bash scripts/daily_paper_run.sh   # preview, no ledger writes / no orders
 ```
 
