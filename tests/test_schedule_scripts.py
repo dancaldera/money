@@ -86,10 +86,42 @@ def _run_catchup(hb: Path) -> subprocess.CompletedProcess:
     )
 
 
+def _run_bash(snippet: str) -> str:
+    return subprocess.run(
+        ["bash", "-c", snippet], capture_output=True, text=True, cwd=str(ROOT)
+    ).stdout
+
+
+def test_dry_run_preview_never_advances_the_success_heartbeat(tmp_path):
+    """A preview must not make a day that never scanned look scanned.
+
+    The 22:00 catch-up guard runs the desk only when today's success heartbeat is
+    missing; a DRY_RUN preview that advanced it would mask a missed real run, and
+    a missed day is permanent (paper-scan only evaluates the newest closed bar).
+    """
+    success, preview = tmp_path / "success", tmp_path / "preview"
+    out = _run_bash(f'source scripts/_lib.sh; record_scan_success 1 "{success}" "{preview}"')
+    assert preview.exists() and not success.exists()
+    assert "NOT advanced" in out
+    # end to end: the guard still sees the day as unscanned
+    assert "WOULD RUN" in _run_catchup(success).stdout
+
+    _run_bash(f'source scripts/_lib.sh; record_scan_success 0 "{success}" "{preview}"')
+    assert success.read_text().strip().isdigit()
+    assert "skip" in _run_catchup(success).stdout
+
+
+def test_daily_wrapper_records_success_through_the_preview_guard():
+    text = (ROOT / "scripts" / "daily_paper_run.sh").read_text()
+    assert "record_scan_success" in text
+    assert ".last_preview_paperscan" in text
+    assert 'heartbeat "$REPO_DIR/results/.last_success_paperscan"' not in text
+
+
 def test_catchup_is_silent_when_todays_scan_already_succeeded(tmp_path):
     """Idempotence: any successful scan today (agent job or catch-up) silences it.
 
-    The 17:00 daily run is an AGENT job, so it can die (model outage, inactivity
+    The 18:35 daily run is an AGENT job, so it can die (model outage, inactivity
     timeout) before it ever reaches the wrapper; this guard must never double-run
     the desk on a day that already scanned. The no_agent cron job delivers stdout
     verbatim, so the real path must print nothing.

@@ -1,8 +1,14 @@
 #!/bin/bash
-# Daily paper-trading run. Invoked by launchd (see scripts/com.money.paperscan.plist).
-# Runs the chosen strategy across the watchlist on the Alpaca PAPER account.
-# The launchd schedule is 18:05 Mexico City time, just after the 00:00 UTC
-# crypto daily close, so the latest closed crypto candle is fresh.
+# Daily paper-trading run. Invoked by the Hermes cron job "money · daily paper
+# run" (and by the 22:00 catch-up guard on a day that never scanned).
+#
+# SLOT MATTERS: this must run ~18:35 Mexico City time (00:35 UTC), just after the
+# 00:00 UTC crypto daily close. At 17:00 CST (23:00 UTC) the newest *closed*
+# crypto bar is one full UTC day old, so a crypto entry executes ~23h after its
+# signal: measured over 8 cryptos / 4.7y that pays 0.06% of drift per cross and
+# expires 18% of buy intents (~10/year) against the frozen 3% gap cap — trades the
+# desk never takes, and a fresh cross is required to re-enter, so the move is
+# missed outright. Reproduce: `python scripts/analysis_execution_gaps.py`.
 #
 # Change STRATEGY here to switch what the schedule trades.
 # sma_cross chosen over rsi_meanrev on out-of-sample evidence (`money validate`):
@@ -67,7 +73,9 @@ EXTRA=""
     printf '%s\n' "$OUT" | "$REPO_DIR/.venv/bin/money" email-report \
       --alert-title "daily paper-scan FAILED (exit $rc)" || true
   else
-    heartbeat "$REPO_DIR/results/.last_success_paperscan"
+    record_scan_success "${DRY_RUN:-0}" \
+      "$REPO_DIR/results/.last_success_paperscan" \
+      "$REPO_DIR/results/.last_preview_paperscan"
     # execute-intents prints Python dicts ({"action": "submitted"}), while
     # paper-stops prints `action=stopped`; match either form so the notify
     # never silently dies on a CLI output change.

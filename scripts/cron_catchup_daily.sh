@@ -1,7 +1,7 @@
 #!/bin/bash
 # Hermes-cron catch-up guard for the daily paper scan (paper desk, fake money).
 #
-# Why: the 17:00 "daily paper run" job is an AGENT job, so it can die before it
+# Why: the 18:35 "daily paper run" job is an AGENT job, so it can die before it
 # ever reaches the wrapper (model outage, credit exhaustion, inactivity
 # timeout). That silently costs a whole day of frozen SMA signals, and the loss
 # is permanent: `paper-scan` only evaluates the LATEST closed bar, so a fresh

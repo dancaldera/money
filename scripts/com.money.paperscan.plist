@@ -14,14 +14,16 @@
     <key>WorkingDirectory</key>
     <string>/Users/danielcaldera/money</string>
 
-    <!-- Run at 18:05 Mexico City time: just after the 00:00 UTC crypto daily
-         close and after the US equity close. -->
+    <!-- Run at 18:35 Mexico City time (00:35 UTC): just after the 00:00 UTC
+         crypto daily close and after the US equity close. Keep this in step with
+         the Hermes cron job "money · daily paper run" — at 17:00 the crypto scan
+         silently evaluates a one-day-old bar. -->
     <key>StartCalendarInterval</key>
     <dict>
         <key>Hour</key>
         <integer>18</integer>
         <key>Minute</key>
-        <integer>5</integer>
+        <integer>35</integer>
     </dict>
 
     <!-- Don't fire the moment it's loaded; wait for the scheduled time. -->

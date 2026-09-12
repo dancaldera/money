@@ -26,3 +26,20 @@ notify() {
 heartbeat() {
   date +%s > "$1" 2>/dev/null || true
 }
+
+# record_scan_success <dry_run 0|1> <success_heartbeat> <preview_heartbeat>:
+# record a finished daily scan. A DRY_RUN preview must NEVER advance the success
+# heartbeat: the 22:00 catch-up guard runs the desk only when today's success
+# heartbeat is missing, so a preview would mask a missed real run — and a missed
+# day is permanent (paper-scan only ever evaluates the newest closed bar, so that
+# bar's fresh crosses are never seen again). Previews keep a separate marker so a
+# human can still tell that one ran.
+record_scan_success() {
+  local dry_run="$1" success="$2" preview="$3"
+  if [ "$dry_run" = "1" ]; then
+    heartbeat "$preview"
+    echo "preview (DRY_RUN): success heartbeat NOT advanced ($success) — the catch-up guard still sees today as unscanned"
+    return 0
+  fi
+  heartbeat "$success"
+}

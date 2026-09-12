@@ -21,13 +21,34 @@ The macOS launchd agents were removed on purpose: one scheduler with visible sta
 | Job | Schedule | Mode |
 |---|---|---|
 | money · morning buy/hold/sell | every day at 09:00 | agent + `scripts/morning_brief.sh` (read-only resume in Hermes) |
-| money · daily paper run | every day at 17:00 | agent (terminal, workdir `~/money`) |
+| money · daily paper run | every day at 18:35 | agent (terminal, workdir `~/money`) |
 | money · daily scan catch-up (silencioso) | every day at 22:00 | `no_agent` script (`scripts/cron_catchup_daily.sh`), only runs the desk if today never scanned |
 | money · stop monitor (silencioso) | every 30 min | `no_agent` script |
 | money · health watchdog (silencioso) | every hour | `no_agent` script |
 | money · mejora diaria (agente) | every day at 08:00 | agent (objective: make money) |
 
-The 17:00 daily run is an **agent** job, so it can die before it ever reaches
+### Why 18:35 and not 17:00
+
+Crypto daily bars close at 00:00 UTC. At 17:00 CST (23:00 UTC) the newest
+*closed* crypto bar is one full UTC day old, so a crypto entry executes ~23h
+after its signal — and the frozen 3% adverse-gap cap expires the intent when the
+price has already run, which a fresh-cross strategy can never recover (no fresh
+cross, no re-entry). Measured over 8 cryptos / 4.7 years
+(`python scripts/analysis_execution_gaps.py`):
+
+- 18% of buy intents (~10/year) fall outside the 3% cap and are never taken;
+- the remaining entries pay ~0.06% of adverse drift per cross.
+
+At 18:35 CST (00:35 UTC) the just-closed bar is the one scanned and execution
+lands ~35 min after its close, which is also what `portfolio-backtest` models
+("execute prior closed-bar intents at the next available bar open"). 35 minutes
+(rather than 00:05) leaves Alpaca time to publish the completed bar; a bar that
+is still forming is dropped either way (`data/clean.py: drop_forming_bar`), and
+at 00:05 a lagging publication would quietly reuse the stale bar. Stocks are
+unaffected: their daily bar is complete long before 18:35 and their intents are
+executed at 09:31 ET the next morning, exactly as the backtest assumes.
+
+The 18:35 daily run is an **agent** job, so it can die before it ever reaches
 `daily_paper_run.sh` (model/API outage, credit exhaustion, inactivity timeout) and
 nothing trades. That is unrecoverable by design: `paper-scan` only evaluates the
 latest closed bar, so a fresh cross on the missed bar is never seen again. The
@@ -65,6 +86,11 @@ DRY_RUN=1 bash scripts/daily_paper_run.sh   # preview, no ledger writes / no ord
 
 Logs: `results/paper_scan.log`, `results/stop_monitor.log`, `results/health.log`,
 `results/morning_brief.log` (rotation keeps 2000 lines). Heartbeats: `results/.last_success_*`.
+
+`DRY_RUN=1` never advances `.last_success_paperscan` — it writes
+`.last_preview_paperscan` instead. The 22:00 catch-up guard decides on the success
+heartbeat, so a preview must not be able to make a missed evening look scanned
+(and the hourly watchdog keeps reporting the real run).
 
 ## Mid-history account
 
