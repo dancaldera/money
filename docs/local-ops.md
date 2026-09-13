@@ -92,6 +92,13 @@ Logs: `results/paper_scan.log`, `results/stop_monitor.log`, `results/health.log`
 heartbeat, so a preview must not be able to make a missed evening look scanned
 (and the hourly watchdog keeps reporting the real run).
 
+`money health` (and therefore the 09:00 brief and the hourly watchdog) also prints
+one `coverage_<scope>:` line comparing the ledger's newest recorded bar with the
+newest closed bar in the cached data. `behind=1` means a run fetched fresh data
+and the ledger did not advance — the bar can still be scanned by re-running the
+desk, so `health_check.sh` alerts on it. Older `gaps` (bars never evaluated at
+all, see `docs/run2.md`) stay visible without alerting forever.
+
 ## Mid-history account
 
 This account had already traded when the merged desk was bound, so plain

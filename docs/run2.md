@@ -146,6 +146,34 @@ benchmark is monthly rebalanced 25% equal-weight stocks, 25% equal-weight
 crypto, and 50% cash. A missing or unattributed broker fee remains visible in
 the account-level fee total rather than being silently invented.
 
+## Scan coverage
+
+`paper-scan` evaluates only the newest *closed* bar, so a bar that is never the
+newest one when a run looks is never evaluated at all — and the frozen strategy
+re-enters only on a fresh SMA cross, so a cross on that bar is gone for good.
+Two real ways to lose one silently: a wrapper that fetches fresh data and then
+records nothing new (the desk keeps trading the older bar), and a schedule step
+that walks over the 00:00 UTC crypto close (a run at 17:00 CST advances the data
+clock by two days and steps over one bar; that is how the crypto bar of
+2026-09-11 was never evaluated after the slot moved to 18:35).
+
+`money health` therefore reports, per scope, how far the ledger is from the data:
+
+```
+coverage_crypto: gap newest_closed=2026-09-12T00:00:00 newest_recorded=2026-09-12T00:00:00 behind=0 gaps=1 recent_gaps=1 missing=2026-09-11T00:00:00
+coverage_equity: ok  newest_closed=2026-09-11T04:00:00 newest_recorded=2026-09-11T04:00:00 behind=0 gaps=0 recent_gaps=0 missing=-
+```
+
+* `behind=1` — the ledger has not evaluated the newest closed bar of the cached
+  data. Still actionable, so `scripts/health_check.sh` alerts on it.
+* `gaps` / `missing` — complete bars inside the recorded window with no decision:
+  already-permanent losses, kept in the log and the 09:00 brief as the evidence
+  trail. `recent_gaps` marks a skip inside the newest three bars; older skips stay
+  on record without alerting forever.
+
+The lines are read-only and offline (local parquet cache, no broker, no network)
+and are printed by `scripts/morning_brief.sh` and logged by the hourly watchdog.
+
 ## Evidence gate
 
 Do not promote a shadow rule because of a few good weeks. Evaluate only after

@@ -15,6 +15,8 @@ import subprocess
 import time
 from pathlib import Path
 
+from trading.run2.coverage import ScopeCoverage, bar_key
+
 from .run2_helpers import ROOT
 
 
@@ -155,3 +157,31 @@ def test_catchup_flags_a_wrapper_that_did_not_record(tmp_path):
     text = CATCHUP.read_text()
     assert 'source "$REPO_DIR/scripts/_lib.sh"' in text
     assert "unscanned" in text
+
+
+def test_health_coverage_line_drives_the_watchdog_sed():
+    """The coverage alert fires only if health_check.sh's sed still matches the
+    real ``money health`` line: the CLI writes the shape, the watchdog parses it.
+
+    Coverage is the second half of the missed-bar hole the 22:00 catch-up guard
+    closes: a bar that is never the newest one when a run looks (a run that
+    fetches fresh data and records nothing, a slot that steps over the 00:00 UTC
+    crypto close) is never scanned and the frozen strategy needs a fresh cross to
+    re-enter — so the cross is lost for good. Only ``behind=1`` (a live lag, still
+    actionable) may alert; an old ``gaps`` skip must not alert forever.
+    """
+    expr = next(e for e in re.findall(r"sed -n '([^']+)'", (ROOT / "scripts" / "health_check.sh").read_text())
+                if "coverage_" in e)
+
+    def _scope(behind: bool) -> str:
+        return ScopeCoverage(
+            scope="crypto",
+            symbols=8,
+            newest_closed=bar_key("2026-09-13T00:00:00+00:00"),
+            newest_recorded=bar_key("2026-09-12T00:00:00+00:00" if behind else "2026-09-13T00:00:00+00:00"),
+            gaps=(bar_key("2026-09-11T00:00:00+00:00"),),
+            recent=(bar_key("2026-09-13T00:00:00+00:00"), bar_key("2026-09-12T00:00:00+00:00")),
+        ).health_line()
+
+    assert _run_bash(f"printf '%s\\n' '{_scope(True)}' | sed -n '{expr}'").strip() == "crypto"
+    assert _run_bash(f"printf '%s\\n' '{_scope(False)}' | sed -n '{expr}'").strip() == ""

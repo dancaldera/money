@@ -56,6 +56,16 @@ else
   if [ "$halted" = "True" ]; then
     add_problem "run is HALTED — reason: ${halt_reason:-unknown} (buys stop until reset)"
   fi
+  # Scan coverage: `money health` reports, per asset scope, whether the ledger has
+  # evaluated the newest *closed* bar of the cached data. A bar that is never the
+  # newest one when a run looks is never scanned at all, and the frozen strategy
+  # needs a fresh SMA cross to re-enter — so the cross is lost for good. Only
+  # behind=1 (a live, still-actionable lag) alerts here; the permanent `gaps` list
+  # stays in the log and the morning brief so an old skip cannot alert forever.
+  behind_scopes="$(printf '%s\n' "$health_out" | sed -n 's/^ *coverage_\([a-z]*\): .*behind=1.*/\1/p')"
+  for scope in $behind_scopes; do
+    add_problem "scan coverage: ledger has not evaluated the newest closed $scope bar (data is ahead) — a skipped bar is never re-scanned, so re-run the desk"
+  done
 fi
 
 {

@@ -567,6 +567,27 @@ def cmd_run_init(args, cfg):
         ledger.close()
 
 
+def _scan_coverage_lines(run_cfg, ledger) -> list[str]:
+    """Best-effort scan-coverage lines for the health dump (cached data, no network).
+
+    A bar that is never the newest complete one when a run looks is never
+    evaluated, and a fresh SMA cross on it is lost for good — so the health dump
+    reports how far the ledger is from the newest closed bar and which bars were
+    skipped. Diagnostics must never break the watchdog: any failure degrades to a
+    single explanatory line.
+    """
+    try:
+        from .run2.coverage import cached_bars, health_lines
+
+        bars = cached_bars(run_cfg.symbols)
+        recorded: dict[str, list[str]] = {}
+        for row in ledger.decisions(run_cfg.run_id, "baseline"):
+            recorded.setdefault(row["symbol"], []).append(row["bar_end"])
+        return health_lines(list(run_cfg.symbols), bars, recorded)
+    except Exception as exc:  # noqa: BLE001 — health stays read-only and must not fail
+        return [f"  coverage: unavailable ({exc.__class__.__name__})"]
+
+
 def cmd_run_health(args, cfg):
     """Read-only run health for the watchdog: halted, equity, drawdown, positions."""
     run_cfg, ledger, service = _run2(args, with_broker=False)
@@ -574,6 +595,8 @@ def cmd_run_health(args, cfg):
         info = service.health()
         for key, value in info.items():
             print(f"  {key}: {value}")
+        for line in _scan_coverage_lines(run_cfg, ledger):
+            print(line)
     finally:
         ledger.close()
 
