@@ -10,6 +10,9 @@ How the paper desk actually runs on this machine. Paper only: Alpaca `paper=True
 - Ledger: `results/run2/ledger.sqlite` (Run 2 event ledger; positions rebuilt from fills).
 - Frozen manifest: `config/run2.yaml` — $100,000, SMA 10/30, $625 entries, 8% stop,
   5% drawdown halt. Its hash is stored at init; editing it breaks every command.
+  Parameter experiments go in `config/experiments/` and replay read-only with
+  `money portfolio-backtest --run-config config/experiments/<name>.yaml`
+  (never reachable by live commands) — see `docs/experiments.md`.
 - Credentials: `.env` (paper keys, `chmod 600`, gitignored). `EMAIL_*` optional.
 - Evidence from the previous desk (`veto` fork): `results/legacy-veto/` (its ledger,
   logs and heartbeats) and `~/Legacy/money-veto-2026-09-09/` (full archive).

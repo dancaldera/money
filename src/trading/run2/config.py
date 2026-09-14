@@ -20,6 +20,10 @@ _RUN2_CRYPTO = (
 )
 _RUN2_STOCKS = ("AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AMD", "NFLX")
 
+# The audited live paper run. Its manifest values are frozen and no other
+# manifest may claim this run_id.
+LIVE_RUN_ID = "run2"
+
 
 @dataclass(frozen=True)
 class StrategyConfig:
@@ -109,8 +113,16 @@ def _require(raw: dict[str, Any], key: str, parent: str = "config") -> Any:
     return raw[key]
 
 
-def load_run_config(path: str | Path) -> RunConfig:
-    """Load and validate a manifest, returning its stable content hash."""
+def load_run_config(path: str | Path, *, strict: bool = True) -> RunConfig:
+    """Load and validate a manifest, returning its stable content hash.
+
+    ``strict`` (the default) pins every frozen Run 2 value and the archived
+    17-symbol watchlist, so the audited live run can never be re-pointed at a
+    different manifest. Research commands pass ``strict=False`` to replay an
+    experiment manifest: safety and consistency checks still apply, the live
+    ``run2`` run_id is still refused, and no experiment may relax the
+    paper-only / no-margin contract.
+    """
     path = Path(path)
     with path.open() as f:
         raw = yaml.safe_load(f) or {}
@@ -146,11 +158,11 @@ def load_run_config(path: str | Path) -> RunConfig:
         raw=raw,
         fingerprint=sha256(_canonical(raw).encode()).hexdigest(),
     )
-    _validate(cfg)
+    _validate(cfg, strict=strict)
     return cfg
 
 
-def _validate(cfg: RunConfig) -> None:
+def _validate(cfg: RunConfig, *, strict: bool = True) -> None:
     if not cfg.run_id or any(c.isspace() for c in cfg.run_id):
         raise RunConfigError("run_id must be non-empty and contain no whitespace")
     if cfg.starting_equity <= 0:
@@ -183,6 +195,15 @@ def _validate(cfg: RunConfig) -> None:
         raise RunConfigError("SEC lookback and form allowlist must be non-empty")
     if cfg.research.feature_max_age_hours <= 0:
         raise RunConfigError("feature_max_age_hours must be positive")
+
+    if not strict:
+        # Experiment path: parameters may differ, but the audited live run and
+        # the paper-only contract stay off limits.
+        if cfg.run_id == LIVE_RUN_ID:
+            raise RunConfigError(
+                f"experiment manifests must not reuse the live run_id {LIVE_RUN_ID!r}"
+            )
+        return
 
     frozen = {
         "starting_equity": (cfg.starting_equity, 100_000),

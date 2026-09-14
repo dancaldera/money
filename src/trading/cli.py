@@ -110,13 +110,18 @@ def _fmt_row(row: dict) -> str:
     )
 
 
-def _run2(args, with_broker: bool = False):
-    """Load the frozen Run 2 manifest and ledger lazily."""
+def _run2(args, with_broker: bool = False, allow_experiment: bool = False):
+    """Load the frozen Run 2 manifest and ledger lazily.
+
+    ``allow_experiment`` is for read-only research commands only: it lets a
+    manifest under config/experiments/ (a different run_id) replay with
+    different parameters. Live commands keep the strict loader.
+    """
     from .run2 import RunLedger, load_run_config
     from .run2.service import Run2Service, RunSafetyError
 
     config_path = Path(getattr(args, "run_config", None) or RUN2_CONFIG_PATH)
-    run_cfg = load_run_config(config_path)
+    run_cfg = load_run_config(config_path, strict=not allow_experiment)
     requested = getattr(args, "run_id", None)
     if requested and requested != run_cfg.run_id:
         raise RunSafetyError(
@@ -710,7 +715,7 @@ def cmd_portfolio_backtest(args, cfg):
         simulate_portfolio,
     )
 
-    run_cfg, ledger, service = _run2(args, with_broker=False)
+    run_cfg, ledger, service = _run2(args, with_broker=False, allow_experiment=True)
     try:
         frames = _run2_bars(run_cfg, cfg, refresh=args.refresh, recent=False)
         simulation = simulate_portfolio(
@@ -732,6 +737,7 @@ def cmd_portfolio_backtest(args, cfg):
                 (float(benchmark.iloc[-1]) / run_cfg.starting_equity - 1) * 100
                 if len(benchmark) else 0.0
             ),
+            "run_id": run_cfg.run_id,
             "config_hash": run_cfg.fingerprint,
             "data_source": "alpaca",
         }
@@ -742,7 +748,12 @@ def cmd_portfolio_backtest(args, cfg):
         simulation.decisions.to_csv(output / "decisions.csv", index=False)
         benchmark.rename_axis("date").to_csv(output / "benchmark.csv")
         (output / "summary.json").write_text(json.dumps(summary, indent=2, default=str))
-        print(f"\nFrozen synchronized portfolio replay ({summary['data_source']})")
+        from .run2.config import LIVE_RUN_ID
+
+        label = "Frozen synchronized portfolio replay"
+        if run_cfg.run_id != LIVE_RUN_ID:
+            label = "EXPERIMENT portfolio replay (not the live run)"
+        print(f"\n{label} ({summary['data_source']})")
         for key, value in summary.items():
             print(f"  {key}: {value}")
         print(f"  artifacts: {output}\n")
@@ -878,7 +889,7 @@ def build_parser() -> argparse.ArgumentParser:
         "portfolio-backtest",
         help="replay the frozen baseline as a synchronized cash-constrained portfolio",
     )
-    pb.add_argument("--run-id", default="run2")
+    pb.add_argument("--run-id", help="cross-check the manifest run_id (default: the manifest's own)")
     pb.add_argument("--run-config", help="frozen run manifest (default config/run2.yaml)")
     pb.add_argument("--refresh", action="store_true", help="refresh Alpaca historical bars")
     pb.set_defaults(func=cmd_portfolio_backtest)

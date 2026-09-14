@@ -297,6 +297,21 @@ def test_cmd_portfolio_backtest_empty_and_trading(monkeypatch, capsys, tmp_path)
     assert "artifacts:" in capsys.readouterr().out
 
 
+def test_cmd_portfolio_backtest_labels_experiment_manifest(monkeypatch, capsys, tmp_path):
+    """An experiment manifest must announce itself, never pass as the live run."""
+    from dataclasses import replace
+
+    monkeypatch.setattr(cli_mod, "RESULTS_DIR", tmp_path)
+    cfg = replace(run2_config(), run_id="exp-scale-2x")
+    _patch_run2(monkeypatch, run_cfg=cfg, ledger=_LedgerFake())
+    monkeypatch.setattr(cli_mod, "_run2_bars", lambda *a, **k: {})
+    cli_mod.cmd_portfolio_backtest(SimpleNamespace(refresh=False), {})
+    out = capsys.readouterr().out
+    assert "EXPERIMENT portfolio replay (not the live run)" in out
+    assert "run_id: exp-scale-2x" in out
+    assert (tmp_path / "exp-scale-2x" / "portfolio-backtest" / "summary.json").exists()
+
+
 # --- parser + main ---------------------------------------------------------------------------------------------- #
 def test_build_parser_wires_every_command():
     parser = cli_mod.build_parser()
