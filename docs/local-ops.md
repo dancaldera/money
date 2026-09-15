@@ -90,6 +90,20 @@ DRY_RUN=1 bash scripts/daily_paper_run.sh   # preview, no ledger writes / no ord
 Logs: `results/paper_scan.log`, `results/stop_monitor.log`, `results/health.log`,
 `results/morning_brief.log` (rotation keeps 2000 lines). Heartbeats: `results/.last_success_*`.
 
+Research/attribution scripts over the cached bars and the gitignored artifacts
+(both read-only, both regression-tested):
+
+```bash
+.venv/bin/python scripts/analysis_execution_gaps.py    # what the desk's slot costs per signal
+.venv/bin/python scripts/analysis_symbol_edge.py \
+    --artifact results/exp-scale-2x/portfolio-backtest --notional 1250
+```
+
+The second one answers "should we cut the losing symbols?" with a walk-forward
+test (per-trade quality vs total dollars, plus a random-k control and split-half
+persistence). Measured answer so far: raising per-trade expectancy always lost
+dollars, see `docs/experiments.md`.
+
 `DRY_RUN=1` never advances `.last_success_paperscan` — it writes
 `.last_preview_paperscan` instead. The 22:00 catch-up guard decides on the success
 heartbeat, so a preview must not be able to make a missed evening look scanned
