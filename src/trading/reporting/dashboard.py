@@ -363,10 +363,15 @@ def _run2_card(report: dict | None) -> str:
             f"<td>{values['max_drawdown_pct']:.2f}%</td></tr>"
         )
     status_cls = "bad" if report["status"] != "active" else "ok"
-    halt = (
-        f'<div class="neg muted">{html.escape(str(report["halt_reason"]))}</div>'
-        if report.get("halt_reason") else ""
-    )
+    halt = ""
+    if report.get("halt_reason"):
+        # A resumed run keeps its halt text as evidence; it is not a live halt.
+        text = html.escape(str(report["halt_reason"]))
+        halt = (
+            f'<div class="muted">recovered from {text}</div>'
+            if report["status"] == "active"
+            else f'<div class="neg muted">{text}</div>'
+        )
     return (
         '<div class="card full"><h2>Auditable Run 2</h2>'
         f'<span class="pill {status_cls}">{html.escape(report["status"])}</span>{halt}'

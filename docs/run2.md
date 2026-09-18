@@ -104,6 +104,10 @@ every 30 minutes:
   check fill-derived 8% stops -> reconcile
 ```
 
+Live timing deviates from this design on this Mac: the crypto slot runs at
+18:35 CST (00:35 UTC) and the stock slot fires at 08:31 local (~10:31 ET) — see
+`docs/local-ops.md`.
+
 The entry path uses an immediately-or-cancel marketable limit at the adverse-gap
 cap. A price already beyond the cap expires the intent. A stock intent is not
 submitted outside the regular session.
@@ -129,6 +133,43 @@ field. Repeated activity imports are idempotent.
 Reconciliation halts entries if it sees an unknown fill/order or a quantity
 mismatch between Alpaca and the internal ledger. Investigate the log and ledger;
 do not edit the database manually or simply unhalt the run.
+
+## Halt semantics (and the opt-in recovery rule)
+
+A halt is an **event**, not a level: `runs.status` flips to `halted` and every
+live command refuses new buys (`risk.check_entry` → `run_halted`) while exits and
+reconciliation keep running. Two reasons write it:
+
+- `drawdown_halt:<dd>%` — the account equity fell `portfolio.drawdown_halt_pct`
+  below its high-water mark (`service.record_account_snapshot`).
+- `reconciliation_failed:...` — fail-closed on an unknown order or a quantity
+  mismatch. This one is **never** recoverable, by design.
+
+The frozen run (`run2`) keeps the documented **one-way latch**: once halted, only
+a human re-initialises/resettles the run. A manifest may instead opt into a
+recovery rule, and then it applies the same policy in the replay
+(`portfolio.simulate_portfolio`) and in the live service (`risk.halt_action`):
+
+```yaml
+portfolio:
+  halt_recovery_drawdown_pct: 2.5   # re-arm once drawdown falls back to 2.5%
+  halt_recovery_days: 20            # or after 20 calendar days, whichever first
+```
+
+- Only drawdown halts recover; a reconciliation halt stays latched.
+- The cooldown is what actually fires. A halted desk is flat, so its equity
+  cannot rise and `halt_recovery_drawdown_pct` alone is inert (measured,
+  `docs/experiments.md`).
+- On resume the ledger keeps the halt text (`halt_reason` becomes
+  `resumed:drawdown_halt:5.1000%@2.4000%`) and sets `halted_at` to the resume
+  time; `ledger.high_water(..., since=resume_time)` then measures drawdown from
+  the resume, so a peak already lost is not counted twice. Without that
+  re-baseline the halt condition stays true and the desk only re-enters every
+  cooldown period.
+- Reports label that state as `recovered from: ...` — a resumed run is not a halt.
+- Both keys are pinned to **absent** for `run2` by the strict loader, and adding
+  them to `run2.yaml` would change its hash and lock the ledger: adopting recovery
+  live means a new `run_id` with its own `run-init`.
 
 ```bash
 money reconcile --run-id run2

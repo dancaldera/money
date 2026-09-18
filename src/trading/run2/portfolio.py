@@ -12,6 +12,7 @@ import pandas as pd
 
 from ..strategies.base import sma_cross_signal
 from .config import RunConfig
+from .risk import DRAWDOWN_HALT_PREFIX, drawdown_pct, halt_action
 
 
 @dataclass
@@ -169,6 +170,10 @@ def simulate_portfolio(
     equity_rows: list[tuple[pd.Timestamp, float]] = []
     trade_rows: list[dict] = []
     decision_rows: list[dict] = []
+    high_water = 0.0
+    # Non-None while the run is halted by drawdown; exits still execute, entries do not.
+    halted_reason: str | None = None
+    halted_day: pd.Timestamp | None = None
 
     indexed = {s: f.assign(_day=pd.to_datetime(f.index).normalize()).set_index("_day", drop=True) for s, f in clean.items()}
     for day in dates:
@@ -264,6 +269,7 @@ def simulate_portfolio(
                     and same_gross + (len(same_pending) + 1) * cfg.portfolio.position_notional
                     <= max_exposure
                     and correlation_count <= cfg.portfolio.correlation_matches_allowed
+                    and halted_reason is None
                     and (entry_gate(symbol, asset, day) if entry_gate else True)
                 )
                 if allowed:
@@ -276,9 +282,28 @@ def simulate_portfolio(
 
         equity = cash + sum(p.qty * last_prices.get(s, p.entry) for s, p in positions.items())
         equity_rows.append((day, equity))
-        if equity <= max(v for _, v in equity_rows) * (1 - cfg.portfolio.drawdown_halt_pct / 100):
-            # Preserve exits but make the entry gate permanently false.
-            entry_gate = lambda *_args: False
+        # Same halt/recovery policy as the live service (trading.run2.risk): the
+        # replay must not be able to promise a resume the desk could not execute.
+        high_water = max(high_water, equity)
+        dd = drawdown_pct(equity, high_water)
+        action = halt_action(
+            cfg,
+            dd,
+            halted=halted_reason is not None,
+            halt_reason=halted_reason,
+            days_since_halt=(
+                (day - halted_day).days if halted_day is not None else None
+            ),
+        )
+        if action == "halt":
+            halted_reason = f"{DRAWDOWN_HALT_PREFIX}{dd:.4f}%"
+            halted_day = day
+        elif action == "resume":
+            halted_reason = None
+            halted_day = None
+            # Re-baseline: the resumed run measures drawdown from here, exactly
+            # like the live path (the peak it already lost is not counted twice).
+            high_water = equity
 
     equity = pd.Series(dict(equity_rows), name="equity", dtype=float)
     trades = pd.DataFrame(trade_rows)

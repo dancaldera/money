@@ -110,3 +110,43 @@ def drawdown_pct(equity: float, high_water: float) -> float:
         return 0.0
     return max(0.0, (high_water - equity) / high_water * 100)
 
+
+# Live halts write this prefix, and only reasons carrying it are recoverable:
+# a reconciliation mismatch must stay latched (fail-closed by design).
+DRAWDOWN_HALT_PREFIX = "drawdown_halt:"
+
+
+def halt_action(
+    cfg: RunConfig,
+    current_drawdown_pct: float,
+    *,
+    halted: bool,
+    halt_reason: str | None,
+    days_since_halt: float | None = None,
+) -> str:
+    """Decide the drawdown policy for one observation: 'halt', 'resume', 'none'.
+
+    Shared by the live service and the portfolio replay so both apply the same
+    rule. Hitting ``drawdown_halt_pct`` always halts. Recovery only applies to a
+    run stopped by *drawdown*, only when the manifest opts in, and takes effect
+    as soon as either drawdown has fallen back to
+    ``portfolio.halt_recovery_drawdown_pct`` or ``halt_recovery_days`` calendar
+    days have passed since the halt — so the default manifest keeps the one-way
+    latch, and a variant can always come back even when the halted desk sits
+    flat, which is the normal case (no positions means no equity recovery).
+    """
+    if not halted:
+        # The halt trigger only applies to a live run: re-checking it while
+        # halted would pin the latch on forever, because a halted desk is flat
+        # and its drawdown from the old peak never improves on its own.
+        return "halt" if current_drawdown_pct >= cfg.portfolio.drawdown_halt_pct else "none"
+    if not str(halt_reason or "").startswith(DRAWDOWN_HALT_PREFIX):
+        return "none"
+    recovery = cfg.portfolio.halt_recovery_drawdown_pct
+    if recovery is not None and current_drawdown_pct <= recovery:
+        return "resume"
+    recovery_days = cfg.portfolio.halt_recovery_days
+    if recovery_days is not None and days_since_halt is not None and days_since_halt >= recovery_days:
+        return "resume"
+    return "none"
+

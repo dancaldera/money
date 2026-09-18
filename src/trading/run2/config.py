@@ -48,6 +48,16 @@ class PortfolioConfig:
     correlation_threshold: float
     correlation_matches_allowed: int
     drawdown_halt_pct: float
+    # Optional drawdown recovery. Absent (None) keeps the one-way latch the
+    # audited run uses: once halted by drawdown, entries never re-arm. When set,
+    # a run halted *by drawdown* re-arms as soon as drawdown falls back to this
+    # level, so a lost drawdown does not freeze the desk for good.
+    halt_recovery_drawdown_pct: float | None = None
+    # Calendar-day cooldown after a drawdown halt, before entries re-arm. Needed
+    # because a halted desk goes flat: with no positions its equity cannot rise,
+    # so a drawdown-only recovery rule can never trigger (measured, see
+    # docs/experiments.md).
+    halt_recovery_days: int | None = None
 
 
 @dataclass(frozen=True)
@@ -181,6 +191,14 @@ def _validate(cfg: RunConfig, *, strict: bool = True) -> None:
         raise RunConfigError("max_gross_exposure cannot exceed starting equity")
     if not 0 < cfg.portfolio.drawdown_halt_pct < 100:
         raise RunConfigError("drawdown_halt_pct must be between 0 and 100")
+    recovery = cfg.portfolio.halt_recovery_drawdown_pct
+    if recovery is not None and not 0 < recovery < cfg.portfolio.drawdown_halt_pct:
+        raise RunConfigError(
+            "halt_recovery_drawdown_pct must be above 0 and below drawdown_halt_pct"
+        )
+    recovery_days = cfg.portfolio.halt_recovery_days
+    if recovery_days is not None and recovery_days <= 0:
+        raise RunConfigError("halt_recovery_days must be positive")
     if not 0 <= cfg.portfolio.correlation_threshold <= 1:
         raise RunConfigError("correlation_threshold must be in [0, 1]")
     if not cfg.crypto_symbols or not cfg.stock_symbols:
@@ -205,8 +223,13 @@ def _validate(cfg: RunConfig, *, strict: bool = True) -> None:
             )
         return
 
+    # The audited run may never adopt drawdown recovery by editing its manifest:
+    # a new risk rule needs a new run_id (and a human decision), and the ledger's
+    # stored hash would reject the edit anyway.
     frozen = {
         "starting_equity": (cfg.starting_equity, 100_000),
+        "halt_recovery_drawdown_pct": (cfg.portfolio.halt_recovery_drawdown_pct, None),
+        "halt_recovery_days": (cfg.portfolio.halt_recovery_days, None),
         "fast_window": (cfg.strategy.fast_window, 10),
         "slow_window": (cfg.strategy.slow_window, 30),
         "stop_loss_pct": (cfg.strategy.stop_loss_pct, 8),

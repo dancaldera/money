@@ -28,50 +28,88 @@ cat results/exp-scale-2x/portfolio-backtest/summary.json
 
 `--run-id` is now optional here and only cross-checks the manifest; omit it.
 
-## Measured: capital deployment ladder (2022-01-01 → 2026-09-13, 4.70y)
+## Measured: capital deployment ladder (2022-01-01 → 2026-09-17, 4.71y)
 
 Same signals, same 8% stop, same fees/slippage (5bps equities / 25bps crypto);
-only `position_notional` and the exposure caps change (halt as noted).
+only `position_notional`, the exposure caps and the halt/recovery rule change
+(columns below). All rows replayed on the same cached data.
 
-| manifest | notional / gross cap | exposure | return | maxDD | trades | expectancy | Sharpe | halt? |
+| manifest | notional / gross cap | halt | recovery | return | maxDD | trades | expectancy | Sharpe |
 |---|---|---|---|---|---|---|---|---|
-| `run2.yaml` (frozen) | $625 / $5k | 5% of equity | +5.20% | -2.38% | 239 | +$19.21 | 0.843 | no |
-| `scale-2x.yaml` | $1,250 / $10k | 10% | +10.40% | -4.76% | 239 | +$38.43 | 0.844 | no (0.24pp headroom) |
-| `scale-4x.yaml` | $2,500 / $20k | 20% | **-4.30%** | -5.10% | **24** | -$179.06 | -0.691 | **yes, early** |
-| `scale-4x-halt10.yaml` | $2,500 / $20k, halt 10% | 20% | +20.80% | -9.47% | 239 | +$76.85 | 0.842 | no |
+| `scale-1x.yaml` (copy of run2 values) | $625 / $5k | 5% | latch | +5.29% | -2.38% | 240 | +$19.32 | 0.854 |
+| `scale-2x.yaml` | $1,250 / $10k | 5% | latch | +10.57% | -4.76% | 240 | +$38.65 | 0.854 |
+| `scale-2x-recover.yaml` | $1,250 / $10k | 5% | dd ≤2.5% or 20d | +10.57% | -4.76% | 240 | +$38.65 | 0.854 |
+| `scale-4x.yaml` | $2,500 / $20k | 5% | latch | **-4.30%** | -5.10% | **24** | -$179.06 | -0.690 |
+| `scale-4x-recover-10d.yaml` | $2,500 / $20k | 5% | dd ≤2.5% or 10d | **+21.50%** | -9.19% | 233 | +$81.16 | 0.697 |
+| `scale-4x-recover.yaml` | $2,500 / $20k | 5% | dd ≤2.5% or 20d | +16.82% | -9.66% | 232 | +$61.35 | 0.696 |
+| `scale-4x-recover-60d.yaml` | $2,500 / $20k | 5% | dd ≤2.5% or 60d | +20.53% | -8.77% | 217 | +$82.66 | 0.697 |
+| `scale-4x-halt10.yaml` | $2,500 / $20k | 10% | latch | +21.14% | -9.47% | 240 | +$77.29 | 0.694 |
+
+`scale-1x.yaml` is a copy of the frozen run's numbers under its own run_id, because
+`portfolio-backtest` refuses to replay the live `run2` (it is the research path);
+it is the 1x reference row, not the live run. Re-run any row with:
+
+```bash
+.venv/bin/money portfolio-backtest --run-config config/experiments/<manifest>
+```
 
 Findings:
 
-1. **Return scales exactly linearly with deployment while the halt holds.**
-   1x → 2x → 4x(halt10) gives 5.20% → 10.40% → 20.80%, and expectancy per trade
-   in % of notional is 3.07% at every size. Sharpe is unchanged (0.842–0.844):
-   sizing moves dollars, not edge.
-2. **The frozen 5% drawdown halt is the binding constraint, and it is a
-   one-way latch.** `scale-4x` trips it, after which the simulation "preserves
-   exits but makes the entry gate permanently false": trading stops at 24
-   trades and equity flat-lines for the remaining ~4.5 years (-4.30% instead of
-   ~+20%). The live halt behaves the same way (`ledger.is_halted` blocks new
-   entries until a human re-initialises/settles the run).
-3. **2x leaves only 0.24pp of headroom** to that latch (-4.76% vs 5%), on a path
-   with ±$2.4k single-position swings. A slightly worse live sequence trips it
-   and freezes the desk.
-4. Expectancy CI90 already crosses zero at 1x ([-1.43, +42.66]) and at every
-   size, and buy & hold returned +59.48% over the same window. The per-trade
-   edge is a point estimate, not a statistically established one; deployment
-   decisions rest on the DD/halt path, not on significance.
+1. **Return scales linearly with deployment while the halt holds.** 1x → 2x gives
+   5.29% → 10.57%, and the 4x variants that survive the halt reach +16.8% to
+   +21.5%. Expectancy per trade in % of notional is 3.07% at every size: sizing
+   moves dollars, not edge.
+2. **The frozen 5% drawdown halt was the binding constraint, and as a one-way
+   latch it was fatal.** `scale-4x` trips it and trading stops at 24 trades:
+   equity flat-lines at -4.30% for the remaining ~4.2 years. The live halt
+   behaved the same way.
+3. **A recoverable halt removes that failure mode and turns the dead desk back
+   into the ladder.** Same 5% halt, same size, only
+   `halt_recovery_drawdown_pct: 2.5` + `halt_recovery_days: <n>` added:
+   -4.30% (24 trades) → **+16.8% to +21.5%** (217-233 trades). The three cooldown
+   settings (10/20/60 days) all land in that range with maxDD -8.8% to -9.7%, so
+   the result does not rest on a tuned constant.
+4. **Recovery costs nothing on the paths that never halt.** `scale-2x-recover` is
+   bit-identical to `scale-2x` (same return, DD, trades, expectancy) — the rule
+   only fires after a halt, so it is insurance, not a new bet. It matters because
+   2x sits only 0.24pp from the halt (-4.76% vs 5%).
+5. **Recovery matches the "raise the halt" alternative without relying on
+   luck.** `scale-4x-halt10` (+21.14%, DD -9.47%) wins by setting the halt where
+   it never trips; if it ever did, that variant freezes permanently too. The
+   recovery variants reach the same return/DD region *and* define what happens
+   after a halt.
+6. **Two design facts, both measured, that any recovery rule must respect.**
+   (a) A drawdown-only recovery rule is inert: the halted desk is flat, so its
+   equity cannot rise and the drawdown never falls back — identical output to the
+   latch. The calendar cooldown is what actually fires. (b) Without re-baselining
+   the drawdown at the resume, the peak that was already lost keeps the halt
+   condition true: the desk resumed only every 20th day (96 trades, +4.71%).
+   `ledger.high_water(..., since=resume_time)` / the replay's
+   `high_water = equity` re-baseline is what makes it resume properly (232
+   trades).
+7. Expectancy CI90 still crosses zero at every size, and buy & hold returned
+   +60.48% over the same window. The per-trade edge is a point estimate, not a
+   statistically established one; deployment decisions rest on the DD/halt path,
+   not on significance.
 
 ## Consequence (human decision)
 
 Sizing is the only lever that changes dollars, and it interacts with the halt
-that can permanently stop the desk. Any change to `position_notional` /
-exposure caps / `drawdown_halt_pct` is a manifest change of the live run and
-needs the human. Options, in order of what the measurements support:
+that can stop the desk. Any change to `position_notional` / exposure caps /
+`drawdown_halt_pct` / `halt_recovery_*` is a manifest change of the live run and
+needs the human — the strict loader pins all of them (including
+`halt_recovery_*` to absent) and the ledger's stored hash rejects an edit of
+`run2.yaml`, so adopting recovery live means a **new run_id** (`run3`) with its
+own `run-init`, not an edit of the audited run.
 
-1. Keep size at 1x and accept 5%/4.7y.
-2. 2x (`position_notional: 1250`, caps ×2) **together with** a defined halt
-   recovery path — otherwise a single drawdown freezes the desk.
-3. Raise size only if the halt becomes recoverable (e.g. a documented resume
-   procedure with reduced size), which the frozen manifest does not define.
+Options, in order of what the measurements support:
+
+1. Keep size at 1x and accept ~+5.3%/4.7y.
+2. 2x (`position_notional: 1250`, caps ×2) with a halt-recovery rule defined from
+   day one: ~+10.6%/4.7y on the replayed path, ~+17-21% if a 4x-sized variant is
+   ever wanted, and no permanent freeze when the drawdown arrives.
+3. Raise the halt to 10% instead: same region (+21.1%) but no answer for what
+   happens if the 10% is ever reached.
 
 ## Measured: does symbol selection beat keeping the universe? (says no)
 
@@ -126,7 +164,9 @@ Follow-ups, in order of expected dollars: (a) re-simulate `stocks-only` and
 `crypto-only` manifests to price the fees the crypto leg really costs; (b) test a
 **trailing-P&L tilt** (keep all 17 symbols, size toward trailing winners) — the
 one use of finding 2 that adds exposure without dropping trades; (c) the sizing
-ladder above, which still needs a halt-recovery answer.
+ladder above — its halt-recovery blocker is now measured (see
+`scale-*-recover.yaml`), so the next step there is a human decision on a new
+run_id, not more research.
 
 `tests/test_symbol_edge_analysis.py` pins the primitives, including the trap case
 where pruning improves expectancy per trade and still loses dollars.

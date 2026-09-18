@@ -178,7 +178,15 @@ def _render_text(ctx: dict) -> str:
     if not run2:
         w("  not initialized")
     else:
-        halt = f" · HALT: {run2['halt_reason']}" if run2.get("halt_reason") else ""
+        halted = run2["status"] != "active"
+        if run2.get("halt_reason"):
+            # A resumed run keeps its halt text as evidence — label it as history.
+            halt = (
+                f" · HALT: {run2['halt_reason']}" if halted
+                else f" · recovered from: {run2['halt_reason']}"
+            )
+        else:
+            halt = ""
         w(f"  status={run2['status']}{halt} · fees {_money(run2.get('fees', 0))}")
         for name, values in run2.get("portfolios", {}).items():
             w(
@@ -314,11 +322,20 @@ def _render_html(ctx: dict) -> str:
                 str(values["completed_trades"]),
                 f'{values["max_drawdown_pct"]:.2f}%',
             )
-        halt = (
-            f'<div style="color:{_C["red"]};font-size:12px;margin-bottom:6px">'
-            f'HALT: {esc(str(run2["halt_reason"]))}</div>'
-            if run2.get("halt_reason") else ""
-        )
+        if run2.get("halt_reason"):
+            # A resumed run keeps its halt text as evidence — label it as history.
+            if run2["status"] == "active":
+                halt = (
+                    f'<div style="color:{_C["grey"]};font-size:12px;margin-bottom:6px">'
+                    f'recovered from {esc(str(run2["halt_reason"]))}</div>'
+                )
+            else:
+                halt = (
+                    f'<div style="color:{_C["red"]};font-size:12px;margin-bottom:6px">'
+                    f'HALT: {esc(str(run2["halt_reason"]))}</div>'
+                )
+        else:
+            halt = ""
         inner = (
             f'<div style="font-size:12px;margin-bottom:6px">status: '
             f'<b>{esc(run2["status"])}</b> · fees {esc(_money(run2.get("fees", 0)))}</div>'

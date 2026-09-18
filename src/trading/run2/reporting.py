@@ -128,7 +128,11 @@ def render_run_report(report: dict[str, Any]) -> str:
         f"Manifest: {report['config_hash']}",
         f"Recorded fees: ${report['fees']:,.2f}",
     ]
-    if report.get("halt_reason"):
+    if report["status"] == "active":
+        # A resumed run keeps the halt text as evidence; it is not a live halt.
+        if report.get("halt_reason"):
+            out.append(f"Recovered from halt: {report['halt_reason']}")
+    elif report.get("halt_reason"):
         out.append(f"HALT: {report['halt_reason']}")
     if report.get("primary_benchmark"):
         b = report["primary_benchmark"]

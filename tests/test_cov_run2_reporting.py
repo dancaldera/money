@@ -132,3 +132,16 @@ def test_collect_without_benchmark_and_with_halt(tmp_path):
         assert "HALT" in render_run_report(halted)
     finally:
         ledger.close()
+
+
+def test_resumed_run_reports_the_halt_as_history_not_a_live_halt(tmp_path):
+    """A resumable halt keeps its evidence; the report must not cry HALT."""
+    cfg, ledger = initialized_ledger(tmp_path)
+    try:
+        ledger.halt(cfg.run_id, "drawdown_halt:5.1000%")
+        ledger.resume(cfg.run_id, "resumed:drawdown_halt:5.1000%@2.4000%")
+        text = render_run_report(collect_run_report(cfg, ledger))
+        assert "Recovered from halt: resumed:drawdown_halt" in text
+        assert "HALT:" not in text
+    finally:
+        ledger.close()

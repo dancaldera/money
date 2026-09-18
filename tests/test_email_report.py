@@ -75,6 +75,22 @@ def test_empty_context_renders():
     assert "[money lab]" in subject and text
 
 
+def test_digest_labels_a_halt_and_a_resumed_halt_differently(ctx):
+    """A resumed run keeps its halt text as evidence — but is not a live halt."""
+    ctx["run2"]["status"] = "halted"
+    ctx["run2"]["halt_reason"] = "drawdown_halt:5.1000%"
+    _, text, body = er.build_digest(ctx)
+    assert "· HALT: drawdown_halt:5.1000%" in text
+    assert "HALT: drawdown_halt:5.1000%" in body
+
+    ctx["run2"]["status"] = "active"
+    ctx["run2"]["halt_reason"] = "resumed:drawdown_halt:5.1000%@2.4000%"
+    _, text, body = er.build_digest(ctx)
+    assert "recovered from: resumed:drawdown_halt:5.1000%@2.4000%" in text
+    assert "recovered from resumed:drawdown_halt:5.1000%@2.4000%" in body
+    assert "HALT:" not in text and ">HALT:" not in body
+
+
 def test_email_configured_reflects_env(monkeypatch):
     for var in ["EMAIL_SMTP_HOST", "EMAIL_SMTP_USER", "EMAIL_SMTP_PASSWORD",
                 "EMAIL_TO", "EMAIL_FROM"]:

@@ -241,6 +241,24 @@ class RunLedger:
         row = self.run(run_id)
         return bool(row and row["status"] != "active")
 
+    def resume(self, run_id: str, note: str, when: str | None = None) -> None:
+        """Re-arm a halted run, keeping the halt text on the run row as evidence.
+
+        ``note`` becomes ``halt_reason`` (e.g. ``resumed:drawdown_halt:5.2%@2.4%``)
+        so the ledger still shows *why* the desk had stopped after it re-arms.
+        ``halted_at`` is kept and set to the resume time: the resumed run measures
+        its drawdown from here, not from the peak it already lost.
+        """
+        row = self.run(run_id)
+        if row is None:
+            raise LedgerError(f"Run {run_id!r} is not initialized")
+        self.conn.execute(
+            "UPDATE runs SET status = 'active', halted_at = ?, halt_reason = ?"
+            " WHERE run_id = ?",
+            (when or utc_now(), note, run_id),
+        )
+        self.conn.commit()
+
     def record_decision(self, row: dict[str, Any]) -> str:
         decision_id = row.get("decision_id") or str(uuid4())
         values = {
@@ -467,11 +485,21 @@ class RunLedger:
             )
         )
 
-    def high_water(self, run_id: str, portfolio: str = "baseline") -> Decimal | None:
-        row = self.conn.execute(
-            "SELECT MAX(CAST(equity AS REAL)) AS hwm FROM equity_snapshots WHERE run_id=? AND portfolio=?",
-            (run_id, portfolio),
-        ).fetchone()
+    def high_water(self, run_id: str, portfolio: str = "baseline", since: str | None = None) -> Decimal | None:
+        """All-time equity peak, or the peak since ``since`` (ISO timestamp).
+
+        A resumed run passes its resume time so a drawdown it already took and
+        acknowledged is not counted again (see ``resume``).
+        """
+        sql = (
+            "SELECT MAX(CAST(equity AS REAL)) AS hwm FROM equity_snapshots"
+            " WHERE run_id=? AND portfolio=?"
+        )
+        args: list[Any] = [run_id, portfolio]
+        if since:
+            sql += " AND captured_at >= ?"
+            args.append(since)
+        row = self.conn.execute(sql, args).fetchone()
         return Decimal(str(row["hwm"])) if row and row["hwm"] is not None else None
 
     def record_feature(self, row: dict[str, Any]) -> bool:

@@ -14,7 +14,7 @@ from ..live.broker import PaperBroker, quantize_limit_price
 from ..strategies.base import sma_cross_signal
 from .config import RunConfig
 from .ledger import RunLedger, utc_now
-from .risk import check_entry, drawdown_pct
+from .risk import DRAWDOWN_HALT_PREFIX, check_entry, drawdown_pct, halt_action
 
 
 class RunSafetyError(RuntimeError):
@@ -589,7 +589,18 @@ class Run2Service:
         }
 
     def record_account_snapshot(self, account: Mapping[str, Any]) -> dict[str, Any]:
-        hwm = self.ledger.high_water(self.cfg.run_id) or Decimal(str(self.cfg.starting_equity))
+        run_row = self.ledger.run(self.cfg.run_id)
+        halt_reason = run_row["halt_reason"] if run_row else None
+        # A resumed run measures drawdown from its resume time, not from the peak
+        # it already lost — otherwise the halt condition stays true forever and a
+        # recovery rule can never take effect.
+        baseline_since = (
+            run_row["halted_at"]
+            if run_row and str(halt_reason or "").startswith("resumed:")
+            else None
+        )
+        hwm = self.ledger.high_water(self.cfg.run_id, since=baseline_since)
+        hwm = hwm or Decimal(str(self.cfg.starting_equity))
         equity = float(account["equity"])
         hwm_float = max(float(hwm), equity)
         dd = drawdown_pct(equity, hwm_float)
@@ -605,6 +616,35 @@ class Run2Service:
             "source": "alpaca-paper",
         }
         self.ledger.record_equity(row)
-        if dd >= self.cfg.portfolio.drawdown_halt_pct:
-            self.ledger.halt(self.cfg.run_id, f"drawdown_halt:{dd:.4f}%")
+        run_row = self.ledger.run(self.cfg.run_id)
+        halted = self.ledger.is_halted(self.cfg.run_id)
+        halt_reason = run_row["halt_reason"] if run_row else None
+        days_since_halt = None
+        if (
+            halted
+            and self.cfg.portfolio.halt_recovery_days is not None
+            and run_row
+            and run_row["halted_at"]
+        ):
+            days_since_halt = (
+                datetime.fromisoformat(utc_now())
+                - datetime.fromisoformat(str(run_row["halted_at"]))
+            ).total_seconds() / 86_400
+        action = halt_action(
+            self.cfg,
+            dd,
+            halted=halted,
+            halt_reason=halt_reason,
+            days_since_halt=days_since_halt,
+        )
+        if action == "halt":
+            self.ledger.halt(self.cfg.run_id, f"{DRAWDOWN_HALT_PREFIX}{dd:.4f}%")
+        elif action == "resume":
+            # The resumed run's baseline starts at this snapshot, so the peak it
+            # already lost is not counted again (see ledger.high_water).
+            self.ledger.resume(
+                self.cfg.run_id,
+                f"resumed:{halt_reason}@{dd:.4f}%",
+                when=str(row["captured_at"]),
+            )
         return row
