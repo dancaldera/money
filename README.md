@@ -148,8 +148,10 @@ Three schedules drive the paper account (all wrappers append to logs under
 
 - **Context, closed-bar scan, and crypto execution** —
   `scripts/daily_paper_run.sh` at **00:05 UTC**.
-- **Guarded stock execution** — `scripts/execute_stock_intents.sh` at **09:31
-  America/New_York**, Monday–Friday, for decisions made after the prior close.
+- **Guarded stock execution** — `scripts/execute_stock_intents.sh` on a weekday
+  slot for decisions made after the prior close: **09:31 America/New_York** on the
+  launchd/systemd timers, **08:31 local (~10:31 ET)** under the Hermes cron jobs on
+  this Mac (see `docs/local-ops.md`).
 - **Intraday stop monitor** — `scripts/intraday_stop_run.sh`, every **30
   minutes**, closing any open position that has fallen through the stop-loss
   threshold instead of waiting for the daily signal scan.

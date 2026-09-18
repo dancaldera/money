@@ -48,8 +48,14 @@ lands ~35 min after its close, which is also what `portfolio-backtest` models
 (rather than 00:05) leaves Alpaca time to publish the completed bar; a bar that
 is still forming is dropped either way (`data/clean.py: drop_forming_bar`), and
 at 00:05 a lagging publication would quietly reuse the stale bar. Stocks are
-unaffected: their daily bar is complete long before 18:35 and their intents are
-executed at 09:31 ET the next morning, exactly as the backtest assumes.
+unaffected by the crypto clock: their daily bar is complete long before 18:35.
+Their intents execute at the weekday stock slot, which on this Mac is 08:31 local
+(local clock = UTC-6, so ET = local + 2h) — **~10:31 ET, about an hour after the
+09:30 ET open**, plus cron jitter (observed 10:31-11:11 ET, 2026-09-10..16), not
+09:31 ET as the launchd/systemd timers do on other machines. Measured on 30-min
+bars over 199 stock signals, entering at +60min vs the official open drifts
+-0.035% mean / 0.000% median, so the delay is not costing money: do not move the
+slot on that theory.
 
 The 18:35 daily run is an **agent** job, so it can die before it ever reaches
 `daily_paper_run.sh` (model/API outage, credit exhaustion, inactivity timeout) and
@@ -80,7 +86,7 @@ and `scripts/systemd/`.
 ```bash
 bash scripts/morning_brief.sh        # read-only 09:00 dump: health + Alpaca status + stops/scan dry-run
 bash scripts/daily_paper_run.sh      # context + closed-bar scan + crypto execute + reconcile
-bash scripts/execute_stock_intents.sh # guarded stock execution (09:31 ET on upstream timers)
+bash scripts/execute_stock_intents.sh # guarded stock execution (08:31 local ~ 10:31 ET here)
 bash scripts/intraday_stop_run.sh    # 8% stop + reconcile (every 30 min)
 bash scripts/health_check.sh         # heartbeats + halt state (hourly)
 bash scripts/cron_catchup_daily.sh   # 22:00 guard: runs the desk only if today never scanned

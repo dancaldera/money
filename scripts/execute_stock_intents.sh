@@ -1,7 +1,14 @@
 #!/bin/bash
-# Execute frozen stock intents just after the regular US session opens. Signals
-# were captured after the prior close; the 2% marketable-limit guard prevents an
-# adverse opening gap from being chased.
+# Execute frozen stock intents for signals captured after the prior close; the 2%
+# marketable-limit guard prevents an adverse gap from being chased.
+#
+# Timing on this Mac (Hermes cron; local clock = UTC-6, so ET = local + 2h): the
+# slot is 08:31 local, so fills land ~10:31 ET — about an hour after the 09:30 ET
+# open — plus cron jitter (observed 10:31-11:11 ET on 2026-09-10..16). The
+# launchd/systemd timers in scripts/ do fire at 09:31 America/New_York on other
+# machines. Entering ~+60min vs the official open measured drift-neutral
+# (-0.035% mean / 0.000% median over 199 stock signals, 30-min bars, 2026-09), so
+# the delay is not a reason to move this slot. Keep this comment in step with it.
 set -u
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
