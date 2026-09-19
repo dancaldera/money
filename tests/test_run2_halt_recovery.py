@@ -264,6 +264,10 @@ def test_replay_latches_entries_off_after_the_halt():
     sim = simulate_portfolio(cfg, _halt_then_recover_frames())
     assert list(sim.trades["side"]) == ["buy", "sell"]  # the fresh cross is lost
     assert sim.trades.iloc[-1]["reason"] == "stop"
+    # The lost cross is not just missing: it is recorded as suppressed by the halt,
+    # so a replay can tell a halted desk from a full one.
+    blocked = sim.decisions.loc[sim.decisions["blocked_by"] == "run_halted"]
+    assert len(blocked) == 1 and blocked.iloc[0]["signal"] == "BUY"
     assert sim.metrics["completed_trades"] == 1.0
 
 

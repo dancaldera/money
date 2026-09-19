@@ -15,7 +15,28 @@ from trading.run2.config import LIVE_RUN_ID, RunConfigError, load_run_config
 
 from .run2_helpers import ROOT, run2_config
 
-EXPERIMENTS = ["scale-2x", "scale-4x", "scale-4x-halt10"]
+MANIFEST_DIR = ROOT / "config" / "experiments"
+# Discovered at collection time, so a new experiment manifest cannot ship
+# without the load/safety pin below running against it.
+EXPERIMENTS = sorted(path.stem for path in MANIFEST_DIR.glob("*.yaml"))
+KNOWN = {
+    "scale-1x",
+    "scale-2x",
+    "scale-2x-recover",
+    "scale-4x",
+    "scale-4x-halt10",
+    "scale-4x-recover",
+    "scale-4x-recover-10d",
+    "scale-4x-recover-60d",
+    "exp-slots-2x",
+    "exp-slots-all",
+    "exp-slots-all-2x",
+}
+
+
+def test_every_shipped_experiment_manifest_is_discovered():
+    """A new manifest must be picked up by the parametrized pin below."""
+    assert KNOWN <= set(EXPERIMENTS)
 
 
 def _manifest(tmp_path, mutate, name="exp.yaml"):
@@ -100,6 +121,13 @@ def test_shipped_experiment_manifests_load(stem):
     assert cfg.run_id != LIVE_RUN_ID
     assert cfg.execution.paper_only and not cfg.execution.use_margin
     assert cfg.portfolio.position_notional * cfg.portfolio.max_positions <= cfg.portfolio.max_gross_exposure
-    # A live command (strict loader) must refuse the same manifest.
+    if stem == "scale-1x":
+        # Deliberately a copy of the frozen values under another run_id: the
+        # strict loader accepts it (nothing changed), which is exactly what
+        # makes it the reference row of the deployment ladders.
+        assert load_run_config(path).portfolio == run2_config().portfolio
+        return
+    # Any other manifest changes a frozen value, so a live command (strict
+    # loader) must refuse it.
     with pytest.raises(RunConfigError, match="frozen values changed"):
         load_run_config(path)

@@ -101,6 +101,9 @@ needs the human — the strict loader pins all of them (including
 `halt_recovery_*` to absent) and the ledger's stored hash rejects an edit of
 `run2.yaml`, so adopting recovery live means a **new run_id** (`run3`) with its
 own `run-init`, not an edit of the audited run.
+Deployment has a second dimension this ladder did not move — *breadth* (how many
+slots the same gross exposure is spread over). It is measured in the slot ladder
+below, and it is the cheaper of the two levers on drawdown.
 
 Options, in order of what the measurements support:
 
@@ -170,3 +173,63 @@ run_id, not more research.
 
 `tests/test_symbol_edge_analysis.py` pins the primitives, including the trap case
 where pruning improves expectancy per trade and still loses dollars.
+
+## Measured: deployment breadth (slots) vs size (same 4.71y window, through 2026-09-18)
+
+The ladder above moved `position_notional` with the caps, so it measured *dollars
+per trade* and left the slot count at 8. But the frozen desk is capped twice over:
+`max_positions: 8` and `max_gross_exposure: 5000` are the same constraint at $625
+(8 × 625 = 5000), and the replay now records which guard killed each fresh cross
+(`decisions.csv` → `blocked_by`, same names as the live gate in
+`trading.run2.risk.entry_allowed`).
+
+```bash
+.venv/bin/python -c "import pandas as pd; d=pd.read_csv('results/exp-scale-1x/portfolio-backtest/decisions.csv'); \
+print(d[d.signal=='BUY'].groupby(['asset','blocked_by'], dropna=False).size())"
+```
+
+On the 1x reference replay: **458 BUY signals → 253 actionable, 205 (45%)
+suppressed** — `max_gross_exposure` 134 (65% of the blocks), `max_crypto_exposure`
+36, `max_stock_exposure` 13, `correlation_cap` 11, position counts 10. So the
+desk is throttled by total deployment, not by symbol quality, and the correlation
+guard — the obvious suspect — costs 11 signals in 4.7 years: leave it alone.
+
+Breadth ladder (`position_notional` $625, caps scaled to whole-universe slots):
+
+| manifest | notional / slots | gross cap | return | maxDD | trades | win% | expectancy | Sharpe | PF |
+|---|---|---|---|---|---|---|---|---|---|
+| `scale-1x.yaml` (frozen values) | $625 / 8 | $5,000 | +5.35% | -2.38% | 242 | 29.8% | +$19.75 | 0.863 | 1.67 |
+| `exp-slots-2x.yaml` | $625 / 16 | $10,000 | +6.65% | -2.79% | 379 | 30.3% | +$15.64 | 0.730 | 1.53 |
+| `exp-slots-all.yaml` | $625 / 17 | $10,625 | +10.25% | -2.79% | 364 | 30.2% | +$26.18 | 0.776 | 1.88 |
+| `scale-2x.yaml` (same gross as the two above) | $1,250 / 8 | $10,000 | +10.70% | -4.76% | 242 | 29.8% | +$39.49 | 0.863 | 1.67 |
+| `exp-slots-all-2x.yaml` | $1,250 / 17 | $21,250 | **-4.47%** | -5.23% | **70** | 17.1% | -$63.91 | -0.696 | 0.16 |
+
+Findings:
+
+1. **At the same $10k of gross exposure, spend it on breadth, not size.** 8 slots
+   of $1,250 return +10.70% with a -4.76% drawdown; 17 slots of $625 return
+   +10.25% — 96% of the return — with a -2.79% drawdown, i.e. 59% of the risk.
+   Return per unit of drawdown 3.67 against 2.25. The size row sits 0.24pp from
+   the 5% halt; the breadth row keeps 2.21pp.
+2. **Breadth buys trades, and the marginal trade is average, not worse.**
+   8 → 17 slots turns 205 suppressed crosses into live ones: 242 → 364-379 trades
+   at the frozen $625 (`win%` unchanged at ~30%). Per-trade expectancy does not
+   rise (marginal trades are average, exactly as `analysis_symbol_edge.py`
+   predicted); the total does, because the desk takes 50% more of them.
+3. **One slot is not a trend.** `exp-slots-2x` (16) and `exp-slots-all` (17) differ
+   by a single stock slot yet land at +6.65% and +10.25% — single-row paths are
+   noisy. The robust claim is the row *against its same-gross alternative*, not
+   the ordering among slot variants.
+4. **More deployment still dies on the one-way halt.** `exp-slots-all-2x` ($21,250
+   gross, 17 slots) trips the 5% latch at trade 70 and freezes at -4.47%. Same
+   lesson as `scale-4x`: any step up in dollars needs the halt-recovery rule
+   (`halt_recovery_drawdown_pct` / `halt_recovery_days`) defined from day one, or
+   the desk is one bad week from a permanent stop.
+5. Expectancy CI90 still crosses zero and buy & hold still wins (+63.5% over the
+   window). These rows choose between risk paths, not between proven edges.
+
+**Consequence (human decision, unchanged in kind):** the frozen run is at
+1x/8 slots and stays there until a human opens a `run3`. If more dollars are
+wanted, the cheapest first step is breadth at the frozen size (17 slots, $10,625
+gross: ~+10% on the replayed window with the halt still 2.2pp away), and *any*
+size increase should ship together with the recovery rule.

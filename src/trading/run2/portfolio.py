@@ -245,12 +245,14 @@ def simulate_portfolio(
             price = float(history["Close"].iloc[-1])
             last_prices[symbol] = price
             action = "none"
+            blocked_by: str | None = None
             if signal == "BUY" and symbol not in positions and symbol not in pending:
                 same = [p for p in positions.values() if p.asset == asset]
                 pending_buys = [p for p in pending.values() if p.side == "buy"]
                 same_pending = [p for p in pending_buys if p.asset == asset]
                 gross = sum(p.qty * last_prices.get(p.symbol, p.entry) for p in positions.values())
                 same_gross = sum(p.qty * last_prices.get(p.symbol, p.entry) for p in same)
+                asset_kind = "crypto" if asset == "crypto" else "stock"
                 max_count = cfg.portfolio.max_crypto_positions if asset == "crypto" else cfg.portfolio.max_stock_positions
                 max_exposure = cfg.portfolio.max_crypto_exposure if asset == "crypto" else cfg.portfolio.max_stock_exposure
                 correlation_count = _correlation_matches_on_day(
@@ -261,24 +263,33 @@ def simulate_portfolio(
                     cfg.portfolio.correlation_window,
                     cfg.portfolio.correlation_threshold,
                 )
-                allowed = (
-                    len(positions) + len(pending_buys) < cfg.portfolio.max_positions
-                    and len(same) + len(same_pending) < max_count
-                    and gross + (len(pending_buys) + 1) * cfg.portfolio.position_notional
-                    <= cfg.portfolio.max_gross_exposure
-                    and same_gross + (len(same_pending) + 1) * cfg.portfolio.position_notional
-                    <= max_exposure
-                    and correlation_count <= cfg.portfolio.correlation_matches_allowed
-                    and halted_reason is None
-                    and (entry_gate(symbol, asset, day) if entry_gate else True)
-                )
-                if allowed:
+                # Same checks, order and names as the live gate in
+                # trading.run2.risk.entry_allowed, evaluated one by one so a
+                # suppressed buy carries the guard that stopped it into
+                # decisions.csv. Deployment is capped by whichever of these
+                # fires first, and only the counters can say which one it is.
+                notional = cfg.portfolio.position_notional
+                if len(positions) + len(pending_buys) >= cfg.portfolio.max_positions:
+                    blocked_by = "max_positions"
+                elif gross + (len(pending_buys) + 1) * notional > cfg.portfolio.max_gross_exposure:
+                    blocked_by = "max_gross_exposure"
+                elif len(same) + len(same_pending) >= max_count:
+                    blocked_by = f"max_{asset_kind}_positions"
+                elif same_gross + (len(same_pending) + 1) * notional > max_exposure:
+                    blocked_by = f"max_{asset_kind}_exposure"
+                elif correlation_count > cfg.portfolio.correlation_matches_allowed:
+                    blocked_by = f"correlation_cap:{correlation_count}"
+                elif halted_reason is not None:
+                    blocked_by = "run_halted"
+                elif entry_gate is not None and not entry_gate(symbol, asset, day):
+                    blocked_by = "entry_gate"
+                if blocked_by is None:
                     pending[symbol] = PendingIntent(symbol, asset, "buy", price, day)
                     action = "buy_intent"
             elif signal == "SELL" and symbol in positions and symbol not in pending:
                 pending[symbol] = PendingIntent(symbol, asset, "sell", price, day)
                 action = "sell_intent"
-            decision_rows.append({"date": day, "symbol": symbol, "asset": asset, "signal": signal, "action": action, "price": price})
+            decision_rows.append({"date": day, "symbol": symbol, "asset": asset, "signal": signal, "action": action, "price": price, "blocked_by": blocked_by})
 
         equity = cash + sum(p.qty * last_prices.get(s, p.entry) for s, p in positions.items())
         equity_rows.append((day, equity))

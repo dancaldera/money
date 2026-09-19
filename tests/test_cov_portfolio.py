@@ -6,6 +6,7 @@ from dataclasses import replace
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from trading.run2.portfolio import (
     SimPosition,
@@ -121,6 +122,72 @@ def test_simulator_halts_new_entries_after_drawdown():
     sim = simulate_portfolio(cfg, {"AAPL": frame})
     assert sim.trades[sim.trades["side"] == "sell"].iloc[0]["reason"] == "stop"
     assert sim.metrics["completed_trades"] == 1.0
+
+
+# --- blocked_by attribution ------------------------------------------------------ #
+def _paired_frames(asset="stock"):
+    """Two symbols of one asset class that cross up on the same bar."""
+    cfg = run2_config()
+    frame = ohlcv([10.0] * 30 + [9.0, 20.0, 20.0])
+    symbols = cfg.stock_symbols[:2] if asset == "stock" else cfg.crypto_symbols[:2]
+    return {symbol: frame.copy() for symbol in symbols}
+
+
+@pytest.mark.parametrize(
+    "asset,overrides,expected",
+    [
+        ("stock", {"max_positions": 1}, "max_positions"),
+        ("stock", {"max_gross_exposure": 625}, "max_gross_exposure"),
+        ("stock", {"max_stock_positions": 1}, "max_stock_positions"),
+        ("stock", {"max_stock_exposure": 625}, "max_stock_exposure"),
+        ("crypto", {"max_crypto_positions": 1}, "max_crypto_positions"),
+        ("crypto", {"max_crypto_exposure": 625}, "max_crypto_exposure"),
+    ],
+)
+def test_replay_names_the_guard_that_suppressed_a_buy(asset, overrides, expected):
+    """A suppressed buy must carry the guard that stopped it, not a bare bool.
+
+    Without the name, a replay says 45% of fresh crosses never traded but not
+    which cap did it — and only the counters can price relaxing one of them.
+    """
+    base = run2_config()
+    cfg = replace(base, portfolio=replace(base.portfolio, **overrides))
+    sim = simulate_portfolio(cfg, _paired_frames(asset))
+    blocked = sim.decisions.loc[sim.decisions["blocked_by"].notna()]
+    assert set(blocked["blocked_by"]) == {expected}
+    assert set(blocked["signal"]) == {"BUY"}
+
+
+def _stepped_frame(step_bar, step=2.0, amp=0.5, ramp=5, periods=80, base=100.0):
+    """Flat bar series that steps up once, so its only fresh cross is at ``step_bar``."""
+    index = np.arange(periods)
+    advanced = np.clip((index - step_bar + 1) / ramp, 0.0, 1.0)
+    close = base + step * advanced + amp * np.where(index % 2 == 0, 1.0, -1.0)
+    return ohlcv(close)
+
+
+def test_replay_names_the_correlation_cap_and_its_match_count():
+    # sma_cross_signal needs slow + 2 bars before it can report a cross, so the
+    # earliest detectable cross is at bar 32 — the held pair steps at 34, the
+    # blocked candidate at 45.
+    frames = {
+        "AAPL": _stepped_frame(34),
+        "MSFT": _stepped_frame(34),  # both held, ~0.99 correlated with NFLX
+        "NFLX": _stepped_frame(45),
+    }
+    sim = simulate_portfolio(run2_config(), frames)
+    blocked = sim.decisions.loc[sim.decisions["blocked_by"].notna()]
+    assert list(blocked["symbol"]) == ["NFLX"]
+    assert list(blocked["blocked_by"]) == ["correlation_cap:2"]  # 2 held matches, 1 allowed
+
+
+def test_replay_names_the_entry_gate():
+    sim = simulate_portfolio(
+        run2_config(), {"AAPL": ohlcv([10.0] * 30 + [9.0, 20.0, 20.0])},
+        entry_gate=lambda *args: False,
+    )
+    assert set(sim.decisions["blocked_by"].dropna()) == {"entry_gate"}
+    assert sim.trades.empty
 
 
 # --- statistics edge cases ------------------------------------------------------ #
