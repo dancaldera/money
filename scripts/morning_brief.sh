@@ -1,12 +1,13 @@
 #!/bin/bash
 # Read-only morning dump for the Hermes 09:00 buy/hold/sell briefing.
-# Never places orders, never writes the ledger, never touches run2.yaml.
+# Never places orders, never writes the ledger, never touches the live manifest.
 #
 # Hermes cron injects this stdout into the agent prompt. Preview:
 #   bash scripts/morning_brief.sh
 set -u
 STRATEGY="${STRATEGY:-sma_cross}"
-RUN_ID="${RUN_ID:-run2}"
+RUN_ID="${RUN_ID:-run3}"
+RUN_CONFIG="${RUN_CONFIG:-config/run3.yaml}"
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_DIR" || exit 1
@@ -34,16 +35,16 @@ run_section() {
   echo "mode=read-only (no orders, no ledger writes)"
 
   run_section "HEALTH (ledger, no broker)" \
-    "$MONEY" health --run-id "$RUN_ID"
+    "$MONEY" health --run-id "$RUN_ID" --run-config "$RUN_CONFIG"
 
   run_section "PAPER STATUS (Alpaca paper, live)" \
     "$MONEY" paper-status
 
   run_section "STOPS DRY-RUN (8% fill-derived, close nothing)" \
-    "$MONEY" paper-stops --run-id "$RUN_ID" --dry-run
+    "$MONEY" paper-stops --run-id "$RUN_ID" --run-config "$RUN_CONFIG" --dry-run
 
-  run_section "SMA SCAN DRY-RUN (run2 baseline+shadow, record nothing)" \
-    "$MONEY" paper-scan --run-id "$RUN_ID" --strategy "$STRATEGY" --dry-run
+  run_section "SMA SCAN DRY-RUN ($RUN_ID baseline+shadow, record nothing)" \
+    "$MONEY" paper-scan --run-id "$RUN_ID" --run-config "$RUN_CONFIG" --strategy "$STRATEGY" --dry-run
 
   echo
   echo "===== END ====="

@@ -95,7 +95,10 @@ running it repeatedly never stacks duplicate buys. Every evaluation is appended 
 
 ### Auditable Run 2
 
-The current experiment uses the frozen [Run 2 manifest](config/run2.yaml):
+The live paper run is **run3** ([config/run3.yaml](config/run3.yaml), opened
+2026-09-19: breadth caps 17 slots / $10,625 gross, opt-in halt recovery). The
+commands below still show the archived frozen [Run 2 manifest](config/run2.yaml);
+for the record, Run 2 used
 $10,000, SMA 10/30 on closed daily bars, $625 entries, portfolio/asset/correlation
 caps, an 8% fill-derived stop, adverse-gap limits, and a 5% drawdown entry halt.
 Only the baseline can reach Alpaca paper trading. Regime and FinBERT news features

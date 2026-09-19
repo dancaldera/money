@@ -11,6 +11,9 @@ REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_DIR" || exit 1
 source "$REPO_DIR/scripts/_lib.sh"
 
+RUN_ID="${RUN_ID:-run3}"
+RUN_CONFIG="${RUN_CONFIG:-config/run3.yaml}"
+
 LOG="$REPO_DIR/results/stop_monitor.log"
 rotate_log "$LOG"
 
@@ -23,7 +26,7 @@ EXTRA=""
   echo "Stop monitor: $(date)  dry_run=${DRY_RUN:-0}"
 
   # The CLI loads .env from the working directory, so keys are picked up here.
-  OUT="$("$REPO_DIR/.venv/bin/money" paper-stops --run-id run2 $EXTRA 2>&1)"
+  OUT="$("$REPO_DIR/.venv/bin/money" paper-stops --run-id "$RUN_ID" --run-config "$RUN_CONFIG" $EXTRA 2>&1)"
   rc=$?
   echo "$OUT"
   echo "Exit code: $rc"

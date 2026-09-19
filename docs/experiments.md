@@ -99,8 +99,16 @@ that can stop the desk. Any change to `position_notional` / exposure caps /
 `drawdown_halt_pct` / `halt_recovery_*` is a manifest change of the live run and
 needs the human — the strict loader pins all of them (including
 `halt_recovery_*` to absent) and the ledger's stored hash rejects an edit of
-`run2.yaml`, so adopting recovery live means a **new run_id** (`run3`) with its
-own `run-init`, not an edit of the audited run.
+`run2.yaml`, so adopting recovery live required a **new run_id**, not an edit of
+the audited run.
+
+**Done 2026-09-19:** `run3` was opened on the breadth row (`config/run3.yaml`:
+17 slots x $625, gross $10,625) with the recovery rule (2.5% / 20d) included from
+day one — its recovery variant was verified bit-identical to the latch on this
+path (`exp-slots-all-recover`). The live loader learned per-run pinned baselines
+(`_FROZEN_BASELINES` in `src/trading/run2/config.py`): registered live runs pass
+with their own values, everything else still must match the audited baseline or
+replay read-only, so experiment manifests stay broker-unreachable.
 Deployment has a second dimension this ladder did not move — *breadth* (how many
 slots the same gross exposure is spread over). It is measured in the slot ladder
 below, and it is the cheaper of the two levers on drawdown.
@@ -163,8 +171,9 @@ Findings:
    the full universe generated and cannot see how cash, caps and the correlation
    guard would re-route a smaller universe.
 
-Follow-ups, in order of expected dollars: (a) re-simulate `stocks-only` and
-`crypto-only` manifests to price the fees the crypto leg really costs; (b) test a
+Follow-ups, in order of expected dollars: (a) **done** — the legs are re-simulated
+in "Measured: the legs" below (crypto's isolated contribution is thin, +0.94% over
+4.7y; stocks carry the run); (b) test a
 **trailing-P&L tilt** (keep all 17 symbols, size toward trailing winners) — the
 one use of finding 2 that adds exposure without dropping trades; (c) the sizing
 ladder above — its halt-recovery blocker is now measured (see
@@ -228,8 +237,27 @@ Findings:
 5. Expectancy CI90 still crosses zero and buy & hold still wins (+63.5% over the
    window). These rows choose between risk paths, not between proven edges.
 
-**Consequence (human decision, unchanged in kind):** the frozen run is at
-1x/8 slots and stays there until a human opens a `run3`. If more dollars are
-wanted, the cheapest first step is breadth at the frozen size (17 slots, $10,625
-gross: ~+10% on the replayed window with the halt still 2.2pp away), and *any*
-size increase should ship together with the recovery rule.
+**Consequence:** run3 (opened 2026-09-19) implements this first step — breadth at
+the frozen size (17 slots, $10,625 gross) plus the recovery rule as insurance;
+run2 stays at 1x/8 slots as the archived predecessor. Any *further* size increase
+should still ship with a re-measured risk review.
+
+## Measured: the legs, re-simulated (stocks-only / crypto-only)
+
+Cheap follow-up (a) from the symbol-selection section: the same parameters with
+one leg switched off by zeroing its caps (the loader forbids empty watchlists) —
+`exp-stocks-only.yaml` / `exp-crypto-only.yaml`, 2022-01-01 → 2026-09-18.
+
+| manifest | return | maxDD | trades | win% | expectancy | Sharpe |
+|---|---|---|---|---|---|---|
+| `scale-1x.yaml` (both legs) | +5.35% | -2.38% | 242 | 29.8% | +$19.75 | 0.863 |
+| `exp-stocks-only.yaml` | +3.21% | -1.00% | 130 | 35.4% | +$23.26 | 0.900 |
+| `exp-crypto-only.yaml` | +0.94% | -1.72% | 149 | 24.2% | +$4.24 | 0.208 |
+
+Findings: crypto's isolated contribution is thin (+0.94% over 4.7y, Sharpe 0.21,
+expectancy $4.24 while paying 25bps) and stocks carry the run (best win rate and
+expectancy of the three); the legs sum to +4.15% against the joint +5.35%, so the
+full desk also benefits from interaction (shared cash, caps, correlation routing).
+This is not an argument to prune a leg outright — the same trap as symbol pruning —
+but it prices why the crypto fee bill is worth watching, and it sets the bar any
+crypto-only variant would have to beat.

@@ -47,7 +47,7 @@ def test_subject_carries_equity_and_positions(ctx):
 def test_text_body_lists_all_sections(ctx):
     text = er.build_digest(ctx)[1]
     for marker in ["Paper account", "equity $101,234.56", "AAVEUSD", "Last scan",
-                   "Auditable Run 2", "baseline", "Backtests vs buy & hold", "alpha",
+                   "Auditable Run 3", "baseline", "Backtests vs buy & hold", "alpha",
                    "System health", "Insights"]:
         assert marker in text
 

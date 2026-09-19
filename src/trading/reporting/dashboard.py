@@ -150,8 +150,8 @@ def _activity() -> dict:
 
 
 def _run2_summary() -> dict | None:
-    """Read the auditable Run 2 ledger without requiring broker connectivity."""
-    config_path = REPO_DIR / "config" / "run2.yaml"
+    """Read the live run's ledger without requiring broker connectivity."""
+    config_path = REPO_DIR / "config" / "run3.yaml"
     if not config_path.exists():
         return None
     try:
@@ -179,7 +179,7 @@ def collect_context() -> dict:
     insights: list[str] = []
     insights.append(
         f"Legacy diagnostics use <b>{html.escape(strategy)}</b>; per-symbol alpha is not "
-        "portfolio evidence. The frozen Run 2 ledger is authoritative when initialized."
+        "portfolio evidence. The frozen live-run ledger is authoritative when initialized."
     )
     if account:
         pl = sum(p["unrealized_pl"] for p in account["positions"])
@@ -350,9 +350,9 @@ def _activity_card(act: dict) -> str:
 def _run2_card(report: dict | None) -> str:
     if not report:
         return (
-            '<div class="card"><h2>Auditable Run 2</h2>'
-            '<p class="muted">Not initialized. Run <code>money run-init --run-id run2</code> '
-            'only after the paper account is empty and set to $10,000.</p></div>'
+            '<div class="card"><h2>Auditable Run 3</h2>'
+            '<p class="muted">Not initialized. Run <code>money run-init --run-id run3</code> '
+            'only after the paper account is empty and set to $100,000.</p></div>'
         )
     rows = ""
     for name, values in report["portfolios"].items():
@@ -373,7 +373,7 @@ def _run2_card(report: dict | None) -> str:
             else f'<div class="neg muted">{text}</div>'
         )
     return (
-        '<div class="card full"><h2>Auditable Run 2</h2>'
+        '<div class="card full"><h2>Auditable Run 3</h2>'
         f'<span class="pill {status_cls}">{html.escape(report["status"])}</span>{halt}'
         '<table style="margin-top:10px"><tr><th>portfolio</th><th>return</th>'
         f'<th>closed</th><th>max DD</th></tr>{rows}</table></div>'

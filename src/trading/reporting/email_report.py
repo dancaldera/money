@@ -174,7 +174,7 @@ def _render_text(ctx: dict) -> str:
             w("  no open positions")
 
     run2 = ctx.get("run2")
-    w("\n-- Auditable Run 2 --")
+    w("\n-- Auditable Run 3 --")
     if not run2:
         w("  not initialized")
     else:
@@ -347,7 +347,7 @@ def _render_html(ctx: dict) -> str:
         )
     else:
         inner = f'<p style="margin:0;color:{_C["grey"]};font-size:13px">not initialized</p>'
-    parts.append(_card("Auditable Run 2", inner))
+    parts.append(_card("Auditable Run 3", inner))
 
     act = ctx.get("activity", {})
     scan_rows = ""

@@ -117,17 +117,17 @@ def test_run2_summary_states(dirs, no_broker):
     assert dashboard._run2_summary() is None  # no manifest
     config_dir = dirs["repo"] / "config"
     config_dir.mkdir()
-    shutil.copy(ROOT / "config" / "run2.yaml", config_dir / "run2.yaml")
+    shutil.copy(ROOT / "config" / "run3.yaml", config_dir / "run3.yaml")
     assert dashboard._run2_summary() is None  # manifest but no ledger yet
     from trading.run2 import RunLedger, load_run_config
 
-    cfg = load_run_config(config_dir / "run2.yaml")
+    cfg = load_run_config(config_dir / "run3.yaml")
     ledger = RunLedger(dirs["results"] / cfg.run_id / "ledger.sqlite")
     ledger.initialize_run(cfg, "acct")
     ledger.close()
     summary = dashboard._run2_summary()
-    assert summary["run_id"] == "run2" and "baseline" in summary["portfolios"]
-    (config_dir / "run2.yaml").write_text("strategy: [broken")
+    assert summary["run_id"] == "run3" and "baseline" in summary["portfolios"]
+    (config_dir / "run3.yaml").write_text("strategy: [broken")
     assert dashboard._run2_summary() is None  # unreadable manifest stays best-effort
 
 

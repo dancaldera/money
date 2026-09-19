@@ -14,7 +14,8 @@ cd "$REPO_DIR" || exit 1
 # shellcheck source=scripts/_lib.sh
 source "$REPO_DIR/scripts/_lib.sh"
 
-RUN_ID="${RUN_ID:-run2}"
+RUN_ID="${RUN_ID:-run3}"
+RUN_CONFIG="${RUN_CONFIG:-config/run3.yaml}"
 PAPER_MAX_AGE_S="${PAPER_MAX_AGE_S:-108000}"  # 30h
 STOP_MAX_AGE_S="${STOP_MAX_AGE_S:-21600}"     # 6h
 LOG="$REPO_DIR/results/health.log"
@@ -46,7 +47,7 @@ check_heartbeat() {
 check_heartbeat "$REPO_DIR/results/.last_success_paperscan" "$PAPER_MAX_AGE_S" "daily paper scan"
 check_heartbeat "$REPO_DIR/results/.last_success_stopmonitor" "$STOP_MAX_AGE_S" "stop monitor"
 
-health_out="$("$MONEY" health --run-id "$RUN_ID" 2>&1)"
+health_out="$("$MONEY" health --run-id "$RUN_ID" --run-config "$RUN_CONFIG" 2>&1)"
 health_rc=$?
 if [ "$health_rc" -ne 0 ]; then
   add_problem "money health failed (exit $health_rc): $(printf '%s' "$health_out" | head -1)"

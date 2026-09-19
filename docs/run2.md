@@ -1,5 +1,9 @@
 # Run 2 operating protocol
 
+> Historical: run2 was replaced by **run3** (`config/run3.yaml`, opened 2026-09-19 —
+> breadth caps + opt-in recovery) as the live paper run. This document remains
+> run2's protocol/evidence record; the live run follows the same discipline.
+
 Run 2 is a prospective **paper-only** experiment. The baseline strategy is
 frozen in `config/run2.yaml`; research inputs create simulated shadow portfolios
 and can never authorize or size a broker order.

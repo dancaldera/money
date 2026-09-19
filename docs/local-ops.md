@@ -7,9 +7,12 @@ How the paper desk actually runs on this machine. Paper only: Alpaca `paper=True
 
 - Repo/home: `~/money` (public repo: <https://github.com/dancaldera/money>).
   Kept out of `~/Documents` on purpose — macOS TCC blocks background jobs there.
-- Ledger: `results/run2/ledger.sqlite` (Run 2 event ledger; positions rebuilt from fills).
-- Frozen manifest: `config/run2.yaml` — $100,000, SMA 10/30, $625 entries, 8% stop,
-  5% drawdown halt. Its hash is stored at init; editing it breaks every command.
+- Ledger (live): `results/run3/ledger.sqlite` (event ledger; positions rebuilt from
+  fills). `results/run2/ledger.sqlite` is run2's evidence archive.
+- Frozen manifest (live): `config/run3.yaml` — opened 2026-09-19: $100,000, SMA 10/30,
+  $625 entries, 8% stop, 5% drawdown halt with opt-in recovery (2.5% / 20d), breadth
+  caps (17 slots / $10,625 gross). Hash stored at init; editing it breaks every command.
+  `config/run2.yaml` stays frozen as the audited predecessor.
   Parameter experiments go in `config/experiments/` and replay read-only with
   `money portfolio-backtest --run-config config/experiments/<name>.yaml`
   (never reachable by live commands) — see `docs/experiments.md`.
@@ -136,13 +139,17 @@ It was bound with:
 broker qty == ledger qty and `reconcile` has nothing unknown to halt on. From there
 the loop is identical to a fresh init. Read-only status: `.venv/bin/money health`.
 
+run3 was bound the same way on 2026-09-19 (`money run-init --run-id run3
+--run-config config/run3.yaml --resume`), importing AAPL and AMD as its baseline
+fills; run2's ledger remains its archived evidence.
+
 ## Repo & push policy
 
 - Objective of the morning agent: **make money** (paper P&L). It measures the ledger,
   researches ideas on the web, deletes what is unnecessary, implements one small
   tested improvement, commits and pushes to `main`.
 - Hard invariants: paper only (live is a human decision); never commit `.env`,
-  `results/` or `.venv/`, never print keys; never edit the frozen `config/run2.yaml`
+  `results/` or `.venv/`, never print keys; never edit the frozen `config/run3.yaml`
   (use a separate manifest + offline backtest and propose the swap); small, useful,
   reversible changes with green tests — no force-push, no history rewrite, no deleting
   runtime data or tests to make things pass.

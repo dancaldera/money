@@ -16,7 +16,10 @@
 # both strategies are regime-dependent — just the better-supported of the two.
 set -u
 STRATEGY="sma_cross"
-RUN_ID="run2"
+# Live run: run3 (config/run3.yaml) — the breadth deployment opened 2026-09-19.
+# Env-overridable so other-machine timers and tests can point elsewhere.
+RUN_ID="${RUN_ID:-run3}"
+RUN_CONFIG="${RUN_CONFIG:-config/run3.yaml}"
 
 # Repo root = parent of this script's directory.
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -33,7 +36,7 @@ EXTRA=""
 {
   echo "===================================================================="
   echo "Daily paper run: $(date)"
-  echo "strategy=$STRATEGY  repo=$REPO_DIR  dry_run=${DRY_RUN:-0}"
+  echo "strategy=$STRATEGY  repo=$REPO_DIR  run_id=$RUN_ID  dry_run=${DRY_RUN:-0}"
 
   # Capture point-in-time research inputs first. Context is shadow-only, so a
   # provider/model failure is loud but cannot prevent the frozen baseline scan.
@@ -41,7 +44,7 @@ EXTRA=""
   # without it, degrade to regime-only context instead of warning every day.
   CONTEXT_ARGS=""
   "$REPO_DIR/.venv/bin/python" -c "import transformers" >/dev/null 2>&1 || CONTEXT_ARGS="--skip-news"
-  CONTEXT_OUT="$("$REPO_DIR/.venv/bin/money" collect-context --run-id "$RUN_ID" $CONTEXT_ARGS 2>&1)"
+  CONTEXT_OUT="$("$REPO_DIR/.venv/bin/money" collect-context --run-id "$RUN_ID" --run-config "$RUN_CONFIG" $CONTEXT_ARGS 2>&1)"
   context_rc=$?
   if [ "$context_rc" -ne 0 ]; then
     CONTEXT_OUT="$(printf 'CONTEXT WARNING (exit %s):\n%s' "$context_rc" "$CONTEXT_OUT")"
@@ -49,15 +52,15 @@ EXTRA=""
     heartbeat "$REPO_DIR/results/.last_success_context"
   fi
 
-  SCAN_OUT="$("$REPO_DIR/.venv/bin/money" paper-scan --run-id "$RUN_ID" --strategy "$STRATEGY" $EXTRA 2>&1)"
+  SCAN_OUT="$("$REPO_DIR/.venv/bin/money" paper-scan --run-id "$RUN_ID" --run-config "$RUN_CONFIG" --strategy "$STRATEGY" $EXTRA 2>&1)"
   scan_rc=$?
-  EXEC_OUT="$("$REPO_DIR/.venv/bin/money" execute-intents --run-id "$RUN_ID" --asset crypto $EXTRA 2>&1)"
+  EXEC_OUT="$("$REPO_DIR/.venv/bin/money" execute-intents --run-id "$RUN_ID" --run-config "$RUN_CONFIG" --asset crypto $EXTRA 2>&1)"
   exec_rc=$?
   if [ "${DRY_RUN:-0}" = "1" ]; then
     RECON_OUT="dry run — reconciliation skipped"
     reconcile_rc=0
   else
-    RECON_OUT="$("$REPO_DIR/.venv/bin/money" reconcile --run-id "$RUN_ID" 2>&1)"
+    RECON_OUT="$("$REPO_DIR/.venv/bin/money" reconcile --run-id "$RUN_ID" --run-config "$RUN_CONFIG" 2>&1)"
     reconcile_rc=$?
   fi
   OUT="$(printf '%s\n\n%s\n\n%s\n\n%s' "$CONTEXT_OUT" "$SCAN_OUT" "$EXEC_OUT" "$RECON_OUT")"

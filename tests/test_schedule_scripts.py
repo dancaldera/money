@@ -70,7 +70,7 @@ def test_morning_brief_is_read_only_and_covers_the_desk():
     assert "health --run-id" in text
     assert "paper-stops --run-id" in text and "--dry-run" in text
     assert "paper-scan --run-id" in text
-    assert "paper-scan --run-id \"$RUN_ID\" --strategy \"$STRATEGY\" --dry-run" in text
+    assert "paper-scan --run-id \"$RUN_ID\" --run-config \"$RUN_CONFIG\" --strategy \"$STRATEGY\" --dry-run" in text
     assert "execute-intents" not in text
     assert "reconcile" not in text
     assert "paper-close" not in text

@@ -15,6 +15,9 @@ REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_DIR" || exit 1
 source "$REPO_DIR/scripts/_lib.sh"
 
+RUN_ID="${RUN_ID:-run3}"
+RUN_CONFIG="${RUN_CONFIG:-config/run3.yaml}"
+
 LOG="$REPO_DIR/results/stock_execution.log"
 rotate_log "$LOG"
 EXTRA=""
@@ -22,7 +25,7 @@ EXTRA=""
 
 {
   echo "Stock intent execution: $(date)  dry_run=${DRY_RUN:-0}"
-  OUT="$("$REPO_DIR/.venv/bin/money" execute-intents --run-id run2 --asset stock $EXTRA 2>&1)"
+  OUT="$("$REPO_DIR/.venv/bin/money" execute-intents --run-id "$RUN_ID" --run-config "$RUN_CONFIG" --asset stock $EXTRA 2>&1)"
   rc=$?
   echo "$OUT"
   echo "Exit code: $rc"
@@ -31,7 +34,7 @@ EXTRA=""
     printf '%s\n' "$OUT" | "$REPO_DIR/.venv/bin/money" email-report \
       --alert-title "stock intent execution FAILED (exit $rc)" || true
   elif [ "${DRY_RUN:-0}" != "1" ]; then
-    "$REPO_DIR/.venv/bin/money" reconcile --run-id run2 || true
+    "$REPO_DIR/.venv/bin/money" reconcile --run-id "$RUN_ID" --run-config "$RUN_CONFIG" || true
     heartbeat "$REPO_DIR/results/.last_success_stockexecution"
   fi
 } >> "$LOG" 2>&1

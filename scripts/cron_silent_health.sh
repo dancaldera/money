@@ -9,7 +9,7 @@ set -u
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$(
-  RUN_ID="${RUN_ID:-run2}" \
+  RUN_ID="${RUN_ID:-run3}" \
   STOP_MAX_AGE_S="${STOP_MAX_AGE_S:-21600}" \
   PAPER_MAX_AGE_S="${PAPER_MAX_AGE_S:-108000}" \
   bash "$REPO_DIR/scripts/health_check.sh" 2>&1
