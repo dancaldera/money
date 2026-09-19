@@ -5,8 +5,9 @@
 #   bash scripts/health_check.sh
 #
 # Thresholds are env-overridable: a sleeping laptop legitimately stalls the
-# scheduler, so the stop monitor allows 6h (its interval is 30m) and the daily
-# scan 30h. Force-test the alert path with: PAPER_MAX_AGE_S=1 bash scripts/health_check.sh
+# scheduler, so the stop monitor allows 6h (its interval is 30m), the daily
+# scan 30h, and a pending buy intent 96h (PENDING_MAX_AGE_H). Force-test the
+# alert path with: PAPER_MAX_AGE_S=1 bash scripts/health_check.sh
 set -u
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -67,6 +68,15 @@ else
   for scope in $behind_scopes; do
     add_problem "scan coverage: ledger has not evaluated the newest closed $scope bar (data is ahead) — a skipped bar is never re-scanned, so re-run the desk"
   done
+  # A buy intent that never executes permanently reserves exposure and blocks
+  # its symbol (buy_already_pending) — e.g. an AMD intent sat pending 3 days
+  # unnoticed (2026-09-11 bar, executed 2026-09-14). Alert only when the age is
+  # abnormal: PENDING_MAX_AGE_H (default 96h) leaves room for a normal weekend
+  # plus slot jitter.
+  pending_age="$(printf '%s\n' "$health_out" | sed -n 's/^ *pending_intents: .*oldest_age_h=\([0-9.]*\).*/\1/p')"
+  if [ -n "$pending_age" ] && awk -v a="$pending_age" -v m="${PENDING_MAX_AGE_H:-96}" 'BEGIN{exit !(a > m)}'; then
+    add_problem "a buy intent has been pending ${pending_age}h (limit ${PENDING_MAX_AGE_H:-96}h) — it reserves exposure and blocks its symbol; check the scan/execution logs"
+  fi
 fi
 
 {

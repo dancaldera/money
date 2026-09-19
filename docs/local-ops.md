@@ -123,7 +123,11 @@ one `coverage_<scope>:` line comparing the ledger's newest recorded bar with the
 newest closed bar in the cached data. `behind=1` means a run fetched fresh data
 and the ledger did not advance — the bar can still be scanned by re-running the
 desk, so `health_check.sh` alerts on it. Older `gaps` (bars never evaluated at
-all, see `docs/run2.md`) stay visible without alerting forever.
+all, see `docs/run2.md`) stay visible without alerting forever. A
+`pending_intents:` line reports the oldest un-executed buy intent (count, symbol,
+age): a stuck intent permanently reserves exposure and blocks its symbol
+(`buy_already_pending`), so the watchdog alerts past `PENDING_MAX_AGE_H`
+(default 96h — a normal weekend plus slot jitter fits).
 
 ## Mid-history account
 

@@ -185,3 +185,20 @@ def test_health_coverage_line_drives_the_watchdog_sed():
 
     assert _run_bash(f"printf '%s\\n' '{_scope(True)}' | sed -n '{expr}'").strip() == "crypto"
     assert _run_bash(f"printf '%s\\n' '{_scope(False)}' | sed -n '{expr}'").strip() == ""
+
+
+def test_health_pending_line_drives_the_watchdog_sed():
+    """The pending-intent alert fires only if health_check.sh's sed still matches
+    the real ``money health`` line: the CLI writes the shape, the watchdog parses
+    it.
+
+    A buy intent that never executes permanently reserves exposure and blocks its
+    symbol (`buy_already_pending`), so a stuck one must surface in the health
+    dump; the count=0 shape must not match or the alert could never clear.
+    """
+    expr = next(e for e in re.findall(r"sed -n '([^']+)'", (ROOT / "scripts" / "health_check.sh").read_text())
+                if "pending_intents" in e)
+
+    line = "  pending_intents: count=1 oldest=AMD oldest_age_h=76.4"
+    assert _run_bash(f"printf '%s\\n' '{line}' | sed -n '{expr}'").strip() == "76.4"
+    assert _run_bash(f"printf '%s\\n' '  pending_intents: count=0' | sed -n '{expr}'").strip() == ""

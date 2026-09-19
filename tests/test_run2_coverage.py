@@ -9,6 +9,7 @@ detection that makes such a loss visible instead of silent, and pin the flat
 from __future__ import annotations
 
 import os
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pandas as pd
@@ -201,3 +202,29 @@ def test_cmd_run_health_degrades_when_coverage_fails(monkeypatch, capsys):
     cli_mod.cmd_run_health(SimpleNamespace(), {})
     out = capsys.readouterr().out
     assert "coverage: unavailable (RuntimeError)" in out
+
+
+# --- pending-intent aging -------------------------------------------------------------- #
+def test_cmd_run_health_prints_pending_intent_age(monkeypatch, capsys):
+    old = (datetime.now(timezone.utc) - timedelta(hours=76)).isoformat()
+    rows = [
+        {"symbol": "AAPL", "bar_end": "2026-09-12T00:00:00+00:00", "action": "none", "decided_at": old},
+        {"symbol": "AMD", "bar_end": "2026-09-11T04:00:00+00:00", "action": "buy_intent", "decided_at": old},
+    ]
+    _patch_run2(monkeypatch, _LedgerFake(rows))
+    cli_mod.cmd_run_health(SimpleNamespace(), {})
+    out = capsys.readouterr().out
+    assert "pending_intents: count=1 oldest=AMD" in out
+    assert "oldest_age_h=76" in out
+
+
+def test_cmd_run_health_pending_intents_none(monkeypatch, capsys):
+    _patch_run2(monkeypatch, _LedgerFake([]))
+    cli_mod.cmd_run_health(SimpleNamespace(), {})
+    assert "pending_intents: count=0" in capsys.readouterr().out
+
+
+def test_cmd_run_health_pending_degrades_on_bad_rows(monkeypatch, capsys):
+    _patch_run2(monkeypatch, _LedgerFake([{"symbol": "AAPL"}]))
+    cli_mod.cmd_run_health(SimpleNamespace(), {})
+    assert "pending_intents: unavailable (KeyError)" in capsys.readouterr().out

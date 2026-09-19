@@ -11,7 +11,7 @@ Examples
 from __future__ import annotations
 
 import argparse
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -593,6 +593,36 @@ def _scan_coverage_lines(run_cfg, ledger) -> list[str]:
         return [f"  coverage: unavailable ({exc.__class__.__name__})"]
 
 
+def _pending_intent_lines(run_cfg, ledger) -> list[str]:
+    """Best-effort pending buy-intent age line for the health dump.
+
+    A buy intent that never executes permanently reserves exposure and blocks
+    its symbol (`buy_already_pending`), so a stuck one must be visible: the
+    watchdog alerts when the oldest has waited longer than PENDING_MAX_AGE_H.
+    Diagnostics must never break the watchdog: any failure degrades to a single
+    explanatory line.
+    """
+    try:
+        rows = [
+            row
+            for row in ledger.decisions(run_cfg.run_id, "baseline", "pending")
+            if row["action"] == "buy_intent"
+        ]
+        if not rows:
+            return ["  pending_intents: count=0"]
+        oldest = min(rows, key=lambda row: row["decided_at"])
+        age_h = max(
+            0.0,
+            (datetime.now(timezone.utc) - datetime.fromisoformat(oldest["decided_at"])).total_seconds()
+            / 3600.0,
+        )
+        return [
+            f"  pending_intents: count={len(rows)} oldest={oldest['symbol']} oldest_age_h={age_h:.1f}"
+        ]
+    except Exception as exc:  # noqa: BLE001 — health stays read-only and must not fail
+        return [f"  pending_intents: unavailable ({exc.__class__.__name__})"]
+
+
 def cmd_run_health(args, cfg):
     """Read-only run health for the watchdog: halted, equity, drawdown, positions."""
     run_cfg, ledger, service = _run2(args, with_broker=False)
@@ -601,6 +631,8 @@ def cmd_run_health(args, cfg):
         for key, value in info.items():
             print(f"  {key}: {value}")
         for line in _scan_coverage_lines(run_cfg, ledger):
+            print(line)
+        for line in _pending_intent_lines(run_cfg, ledger):
             print(line)
     finally:
         ledger.close()
