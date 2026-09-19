@@ -261,3 +261,38 @@ full desk also benefits from interaction (shared cash, caps, correlation routing
 This is not an argument to prune a leg outright — the same trap as symbol pruning —
 but it prices why the crypto fee bill is worth watching, and it sets the bar any
 crypto-only variant would have to beat.
+
+## Measured: stop refinements — breakeven helps a little; trailing hurts
+
+The 8% stop is fixed and fill-derived: a deep winner like AMD (+15.9% on
+2026-09-19) still has its stop 8% *below entry*, so nothing protects the gain
+above it. Two experiment-only knobs were added to measure refinements without
+touching a live run (both pinned absent for `run2`/`run3`, enforced by a test):
+
+- `stop_breakeven_at_pct: X` — once a close is ≥ +X%, the stop moves up to entry;
+- `stop_trail_pct: Y` — the stop trails Y% under the highest close since entry.
+
+Replays on the run3 basis (`exp-slots-all-recover` = control), 2022-01-01 → 2026-09-18:
+
+| variant | return | maxDD | trades | win% | expectancy | Sharpe | DSR |
+|---|---|---|---|---|---|---|---|
+| control (no knob) | +10.25% | -2.79% | 364 | 30.2% | +$26.18 | 0.776 | 0.914 |
+| breakeven @ +6% | +9.48% | -2.52% | 371 | — | +$23.81 | 0.762 | 0.930 |
+| breakeven @ +8% | +9.95% | -2.62% | 367 | — | +$25.35 | 0.774 | 0.922 |
+| breakeven @ +10% | **+10.51%** | **-2.53%** | 366 | 26.0% | **+$26.95** | **0.804** | 0.932 |
+| breakeven @ +12% | +10.31% | -2.60% | 364 | — | +$26.33 | 0.786 | 0.921 |
+| breakeven @ +15% | +10.09% | -2.81% | 364 | — | +$25.73 | 0.766 | 0.909 |
+| trailing @ 6% | +2.60% | -1.06% | 401 | 36.2% | +$6.08 | 0.651 | 0.725 |
+
+Read: a 6% daily-close trail is destructive — it stops winners out inside normal
+noise (its expectancy CI90, [-0.57, +12.75], includes zero; 37 extra round trips
+for a third of the return). Breakeven is mildly useful, but only set high
+(+10–12%): +0.2–0.3pp of return and drawdown versus control; set low (+6–8%) it
+cuts winners early and costs return. The effect is small and not conclusive
+(DSR ~0.93 for all variants), but its sign is consistent across
+return/DD/expectancy/Sharpe at +10–12%.
+
+**Consequence:** neither knob is adoptable by edit (both are pinned absent on
+every live run). Adoption would ride a future run decision; breakeven@10 is the
+measured candidate, the trail is rejected. Until then the fixed 8% stop remains
+the desk's only downside rule and AMD-style gains stay unprotected above entry.

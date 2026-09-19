@@ -34,6 +34,8 @@ KNOWN = {
     "exp-slots-all-recover",
     "exp-stocks-only",
     "exp-crypto-only",
+    "exp-slots-all-breakeven10",
+    "exp-slots-all-trail6",
 }
 
 
@@ -179,3 +181,11 @@ def test_live_values_under_another_run_id_stay_non_live(tmp_path):
     path = _manifest(tmp_path, lambda raw: _run3_values(raw).update(run_id="exp-lookalike"))
     with pytest.raises(RunConfigError, match="frozen values changed"):
         load_run_config(path)
+
+
+def test_live_runs_pin_the_experiment_stop_knobs(tmp_path):
+    """stop_trail_pct / stop_breakeven_at_pct may never appear on a live run."""
+    for knob in ("stop_trail_pct", "stop_breakeven_at_pct"):
+        path = _manifest(tmp_path, lambda raw, k=knob: _run3_values(raw)["strategy"].update({k: 6}))
+        with pytest.raises(RunConfigError, match="frozen values changed"):
+            load_run_config(path)

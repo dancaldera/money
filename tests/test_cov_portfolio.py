@@ -124,6 +124,38 @@ def test_simulator_halts_new_entries_after_drawdown():
     assert sim.metrics["completed_trades"] == 1.0
 
 
+# --- experiment stop refinements (trailing / breakeven) -------------------------- #
+def test_simulator_trailing_stop_catches_a_reversal_above_entry():
+    base = run2_config()
+    cfg = replace(base, strategy=replace(base.strategy, stop_trail_pct=6))
+    close = [10.0] * 30 + [9.0, 20.0] + [30.0] * 10 + [28.0] * 5
+    opens = list(close)
+    opens[32] = 20.0  # execution-day open matches the 20 signal close
+    opens[42] = 28.5  # first reversal bar opens above the trailed stop
+    frame = ohlcv(close, opens=opens)
+    duped = pd.concat([frame, frame.iloc[[33], :]]).sort_index()  # DataFrame-row path
+    sim = simulate_portfolio(cfg, {"AAPL": duped})
+    sells = sim.trades[sim.trades["side"] == "sell"]
+    assert len(sells) == 1 and sells.iloc[0]["reason"] == "stop"
+    assert sells.iloc[0]["price"] == pytest.approx(28.2)  # 30 peak close - 6%
+    control = simulate_portfolio(base, {"AAPL": frame})
+    assert "stop" not in set(control.trades.get("reason") or [])
+
+
+def test_simulator_breakeven_stop_protects_a_winner():
+    base = run2_config()
+    cfg = replace(base, strategy=replace(base.strategy, stop_breakeven_at_pct=10))
+    close = [10.0] * 30 + [9.0, 20.0] + [22.5] * 5 + [20.1] * 5
+    opens = list(close)
+    opens[32] = 20.0
+    sim = simulate_portfolio(cfg, {"AAPL": ohlcv(close, opens=opens)})
+    sells = sim.trades[sim.trades["side"] == "sell"]
+    assert len(sells) == 1 and sells.iloc[0]["reason"] == "stop"
+    assert sells.iloc[0]["price"] == pytest.approx(20.0)  # stop parked at entry
+    control = simulate_portfolio(base, {"AAPL": ohlcv(close, opens=opens)})
+    assert "stop" not in set(control.trades.get("reason") or [])
+
+
 # --- blocked_by attribution ------------------------------------------------------ #
 def _paired_frames(asset="stock"):
     """Two symbols of one asset class that cross up on the same bar."""

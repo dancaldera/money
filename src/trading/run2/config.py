@@ -37,6 +37,8 @@ _FROZEN_BASELINES: dict[str, dict[str, float | int | None]] = {
         "fast_window": 10,
         "slow_window": 30,
         "stop_loss_pct": 8,
+        "stop_breakeven_at_pct": None,
+        "stop_trail_pct": None,
         "position_notional": 625,
         "max_positions": 8,
         "max_gross_exposure": 5_000,
@@ -62,6 +64,8 @@ _FROZEN_BASELINES: dict[str, dict[str, float | int | None]] = {
         "fast_window": 10,
         "slow_window": 30,
         "stop_loss_pct": 8,
+        "stop_breakeven_at_pct": None,
+        "stop_trail_pct": None,
         "position_notional": 625,
         "max_positions": 17,
         "max_gross_exposure": 10_625,
@@ -88,6 +92,11 @@ class StrategyConfig:
     timeframe: str
     stop_loss_pct: float
     require_fresh_cross_after_stop: bool
+    # Experiment-only stop refinements (None = the frozen fixed fill-derived stop).
+    # Pinned to None for every live run: a trailing/breakeven stop can only be
+    # measured through portfolio-backtest until a human opens a run that carries it.
+    stop_breakeven_at_pct: float | None = None
+    stop_trail_pct: float | None = None
 
 
 @dataclass(frozen=True)
@@ -254,6 +263,10 @@ def _validate(cfg: RunConfig, *, strict: bool = True) -> None:
     recovery_days = cfg.portfolio.halt_recovery_days
     if recovery_days is not None and recovery_days <= 0:
         raise RunConfigError("halt_recovery_days must be positive")
+    for name in ("stop_breakeven_at_pct", "stop_trail_pct"):
+        value = getattr(cfg.strategy, name)
+        if value is not None and value <= 0:
+            raise RunConfigError(f"{name} must be positive when set")
     if not 0 <= cfg.portfolio.correlation_threshold <= 1:
         raise RunConfigError("correlation_threshold must be in [0, 1]")
     if not cfg.crypto_symbols or not cfg.stock_symbols:
@@ -299,6 +312,11 @@ def _validate(cfg: RunConfig, *, strict: bool = True) -> None:
         "fast_window": (cfg.strategy.fast_window, baseline["fast_window"]),
         "slow_window": (cfg.strategy.slow_window, baseline["slow_window"]),
         "stop_loss_pct": (cfg.strategy.stop_loss_pct, baseline["stop_loss_pct"]),
+        "stop_breakeven_at_pct": (
+            cfg.strategy.stop_breakeven_at_pct,
+            baseline["stop_breakeven_at_pct"],
+        ),
+        "stop_trail_pct": (cfg.strategy.stop_trail_pct, baseline["stop_trail_pct"]),
         "position_notional": (cfg.portfolio.position_notional, baseline["position_notional"]),
         "max_positions": (cfg.portfolio.max_positions, baseline["max_positions"]),
         "max_gross_exposure": (cfg.portfolio.max_gross_exposure, baseline["max_gross_exposure"]),

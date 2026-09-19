@@ -23,6 +23,7 @@ class SimPosition:
     entry: float
     stop: float
     entry_fee: float
+    peak: float = 0.0  # highest close since entry (drives experiment trail/breakeven stops)
 
 
 @dataclass
@@ -234,6 +235,27 @@ def simulate_portfolio(
                 realized = (exit_price - pos.entry) * pos.qty - pos.entry_fee - fee
                 trade_rows.append({"date": day, "symbol": symbol, "asset": pos.asset, "side": "sell", "qty": pos.qty, "price": exit_price, "fee": fee, "realized_pl": realized, "reason": "stop"})
                 del positions[symbol]
+
+        # Experiment-only stop refinements (both knobs None on every live run):
+        # track each position's highest close and optionally raise the stop to
+        # breakeven and/or trail it under the peak. Applies from the next
+        # session — today's stop checks already ran.
+        if cfg.strategy.stop_breakeven_at_pct is not None or cfg.strategy.stop_trail_pct is not None:
+            for symbol in sorted(positions):
+                frame = indexed.get(symbol)
+                if frame is not None and day in frame.index:
+                    row = frame.loc[day]
+                    if isinstance(row, pd.DataFrame):
+                        row = row.iloc[0]
+                    pos = positions[symbol]
+                    close = float(row["Close"])
+                    pos.peak = max(pos.peak or pos.entry, close)
+                    be = cfg.strategy.stop_breakeven_at_pct
+                    if be is not None and close >= pos.entry * (1 + be / 100):
+                        pos.stop = max(pos.stop, pos.entry)
+                    trail = cfg.strategy.stop_trail_pct
+                    if trail is not None:
+                        pos.stop = max(pos.stop, pos.peak * (1 - trail / 100))
 
         # Generate fresh signals only after today's close.
         for symbol, asset in sorted(cfg.symbols, key=lambda x: x[0]):
