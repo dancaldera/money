@@ -1,0 +1,91 @@
+# run3 — the live paper run (opened 2026-09-19 by human decision; replaced run2
+# as the scheduled desk, whose ledger remains its own evidence archive).
+#
+# Basis: the deployment-breadth ladder (docs/experiments.md). At the same
+# ~$10.6k gross exposure, spending it on 17 slots x $625 instead of the frozen
+# 8 slots x $1,250 replays at +10.25% vs +10.57% return for -2.79% vs -4.76%
+# maxDD, keeping 2.2pp of halt headroom. The opt-in halt recovery (2.5% / 20d)
+# is included as freeze insurance — verified bit-identical to the one-way latch
+# on this path (`exp-slots-all-recover`).
+#
+# The manifest hash is stored at init; editing this file breaks every command.
+run_id: run3
+starting_equity: 100000
+strategy:
+  name: sma_cross
+  fast_window: 10
+  slow_window: 30
+  timeframe: 1d
+  stop_loss_pct: 8
+  require_fresh_cross_after_stop: true
+portfolio:
+  position_notional: 625
+  max_positions: 17
+  max_gross_exposure: 10625
+  max_crypto_positions: 8
+  max_crypto_exposure: 5000
+  max_stock_positions: 9
+  max_stock_exposure: 5625
+  correlation_window: 60
+  correlation_threshold: 0.80
+  correlation_matches_allowed: 1
+  drawdown_halt_pct: 5
+  # Opt-in recovery: the entry gate re-arms when the drawdown falls back to
+  # <= 2.5% or after 20 calendar days. The halted desk is flat, so the calendar
+  # cooldown is the branch that actually fires.
+  halt_recovery_drawdown_pct: 2.5
+  halt_recovery_days: 20
+execution:
+  stock_gap_limit_pct: 2
+  crypto_gap_limit_pct: 3
+  paper_only: true
+  use_margin: false
+  equity_slippage_bps: 5
+  crypto_taker_fee_bps: 25
+research:
+  regime_min_score: 3
+  feature_max_age_hours: 36
+  news_lookback_days: 60
+  news_min_observations: 30
+  negative_news_z: 2.0
+  sec_lookback_hours: 48
+  sec_forms:
+    - 8-K
+    - 10-K
+    - 10-Q
+    - NT 10-K
+    - NT 10-Q
+    - S-3
+    - 424B2
+    - 424B3
+    - 424B5
+    - DEF 14A
+  vix_percentile: 0.80
+  volatility_percentile: 0.80
+  model: ProsusAI/finbert
+  model_revision: "4556d13015211d73dccd3fdd39d39232506f3e43"
+  arms:
+    - baseline
+    - shadow_regime
+    - shadow_regime_news
+crypto:
+  symbols:
+    - BTC/USD
+    - ETH/USD
+    - SOL/USD
+    - LTC/USD
+    - LINK/USD
+    - DOGE/USD
+    - AVAX/USD
+    - AAVE/USD
+stocks:
+  symbols:
+    - AAPL
+    - MSFT
+    - NVDA
+    - AMZN
+    - GOOGL
+    - META
+    - TSLA
+    - AMD
+    - NFLX
