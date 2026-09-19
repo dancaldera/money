@@ -748,10 +748,10 @@ def cmd_portfolio_backtest(args, cfg):
         simulation.decisions.to_csv(output / "decisions.csv", index=False)
         benchmark.rename_axis("date").to_csv(output / "benchmark.csv")
         (output / "summary.json").write_text(json.dumps(summary, indent=2, default=str))
-        from .run2.config import LIVE_RUN_ID
+        from .run2.config import LIVE_RUN_IDS
 
         label = "Frozen synchronized portfolio replay"
-        if run_cfg.run_id != LIVE_RUN_ID:
+        if run_cfg.run_id not in LIVE_RUN_IDS:
             label = "EXPERIMENT portfolio replay (not the live run)"
         print(f"\n{label} ({summary['data_source']})")
         for key, value in summary.items():

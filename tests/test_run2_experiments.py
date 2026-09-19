@@ -31,6 +31,9 @@ KNOWN = {
     "exp-slots-2x",
     "exp-slots-all",
     "exp-slots-all-2x",
+    "exp-slots-all-recover",
+    "exp-stocks-only",
+    "exp-crypto-only",
 }
 
 
@@ -129,5 +132,50 @@ def test_shipped_experiment_manifests_load(stem):
         return
     # Any other manifest changes a frozen value, so a live command (strict
     # loader) must refuse it.
+    with pytest.raises(RunConfigError, match="frozen values changed"):
+        load_run_config(path)
+
+
+# --- registered live runs (opened by human decision) --------------------------- #
+
+
+def _run3_values(raw):
+    """Mutate a run2 manifest into run3's blessed parameter set."""
+    raw.update(run_id="run3")
+    raw["portfolio"].update(
+        max_positions=17,
+        max_gross_exposure=10625,
+        max_crypto_positions=8,
+        max_crypto_exposure=5000,
+        max_stock_positions=9,
+        max_stock_exposure=5625,
+        halt_recovery_drawdown_pct=2.5,
+        halt_recovery_days=20,
+    )
+    return raw
+
+
+def test_registered_live_run_loads_with_its_own_baseline(tmp_path):
+    """A registered live run (run3) passes the strict loader at its own values."""
+    path = _manifest(tmp_path, _run3_values)
+    cfg = load_run_config(path)
+    assert cfg.run_id == "run3"
+    assert cfg.portfolio.max_positions == 17
+    assert cfg.portfolio.halt_recovery_drawdown_pct == 2.5
+
+
+def test_registered_live_run_still_pins_its_values(tmp_path):
+    """A registered run's manifest may never drift from its baseline."""
+    path = _manifest(
+        tmp_path,
+        lambda raw: _run3_values(raw)["strategy"].update(stop_loss_pct=9),
+    )
+    with pytest.raises(RunConfigError, match="frozen values changed"):
+        load_run_config(path)
+
+
+def test_live_values_under_another_run_id_stay_non_live(tmp_path):
+    """run3's exact value set must not become loadable under a different id."""
+    path = _manifest(tmp_path, lambda raw: _run3_values(raw).update(run_id="exp-lookalike"))
     with pytest.raises(RunConfigError, match="frozen values changed"):
         load_run_config(path)

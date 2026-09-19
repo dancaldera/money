@@ -24,6 +24,61 @@ _RUN2_STOCKS = ("AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AMD", 
 # manifest may claim this run_id.
 LIVE_RUN_ID = "run2"
 
+# Live runs and their blessed parameter sets. Only these run_ids can load
+# through a live command's strict loader, and each must match its entry exactly:
+# opening a new live run is a human decision that lands here as a reviewed
+# entry. After `run-init`, the ledger's stored config hash freezes the manifest
+# for good (editing the file breaks every command).
+_FROZEN_BASELINES: dict[str, dict[str, float | int | None]] = {
+    "run2": {
+        "starting_equity": 100_000,
+        "halt_recovery_drawdown_pct": None,
+        "halt_recovery_days": None,
+        "fast_window": 10,
+        "slow_window": 30,
+        "stop_loss_pct": 8,
+        "position_notional": 625,
+        "max_positions": 8,
+        "max_gross_exposure": 5_000,
+        "max_crypto_positions": 4,
+        "max_crypto_exposure": 2_500,
+        "max_stock_positions": 6,
+        "max_stock_exposure": 3_750,
+        "correlation_window": 60,
+        "correlation_threshold": 0.80,
+        "correlation_matches_allowed": 1,
+        "drawdown_halt_pct": 5,
+        "stock_gap_limit_pct": 2,
+        "crypto_gap_limit_pct": 3,
+    },
+    # Opened 2026-09-19 on the deployment-breadth measurement (docs/experiments.md):
+    # same ~$10.6k gross, spent on 17 slots x $625 instead of 8 x $1,250, plus the
+    # opt-in halt recovery as freeze insurance (verified bit-identical to the
+    # latch on this path, exp-slots-all-recover).
+    "run3": {
+        "starting_equity": 100_000,
+        "halt_recovery_drawdown_pct": 2.5,
+        "halt_recovery_days": 20,
+        "fast_window": 10,
+        "slow_window": 30,
+        "stop_loss_pct": 8,
+        "position_notional": 625,
+        "max_positions": 17,
+        "max_gross_exposure": 10_625,
+        "max_crypto_positions": 8,
+        "max_crypto_exposure": 5_000,
+        "max_stock_positions": 9,
+        "max_stock_exposure": 5_625,
+        "correlation_window": 60,
+        "correlation_threshold": 0.80,
+        "correlation_matches_allowed": 1,
+        "drawdown_halt_pct": 5,
+        "stock_gap_limit_pct": 2,
+        "crypto_gap_limit_pct": 3,
+    },
+}
+LIVE_RUN_IDS: tuple[str, ...] = tuple(_FROZEN_BASELINES)
+
 
 @dataclass(frozen=True)
 class StrategyConfig:
@@ -217,40 +272,56 @@ def _validate(cfg: RunConfig, *, strict: bool = True) -> None:
     if not strict:
         # Experiment path: parameters may differ, but the audited live run and
         # the paper-only contract stay off limits.
-        if cfg.run_id == LIVE_RUN_ID:
+        if cfg.run_id in LIVE_RUN_IDS:
             raise RunConfigError(
-                f"experiment manifests must not reuse the live run_id {LIVE_RUN_ID!r}"
+                f"experiment manifests must not reuse the live run_id {cfg.run_id!r}"
             )
         return
 
-    # The audited run may never adopt drawdown recovery by editing its manifest:
-    # a new risk rule needs a new run_id (and a human decision), and the ledger's
-    # stored hash would reject the edit anyway.
+    # A live run's manifest may never drift from its blessed parameter set: a
+    # new risk rule needs a new run_id (and a human decision — see
+    # _FROZEN_BASELINES), and the ledger's stored hash would reject an edit
+    # anyway. A manifest with any other run_id must still carry the audited
+    # baseline values to pass this loader (that is how `scale-1x`, the faithful
+    # copy used as the ladder reference, keeps loading); anything else must
+    # replay read-only via portfolio-backtest.
+    baseline = _FROZEN_BASELINES.get(cfg.run_id, _FROZEN_BASELINES[LIVE_RUN_ID])
     frozen = {
-        "starting_equity": (cfg.starting_equity, 100_000),
-        "halt_recovery_drawdown_pct": (cfg.portfolio.halt_recovery_drawdown_pct, None),
-        "halt_recovery_days": (cfg.portfolio.halt_recovery_days, None),
-        "fast_window": (cfg.strategy.fast_window, 10),
-        "slow_window": (cfg.strategy.slow_window, 30),
-        "stop_loss_pct": (cfg.strategy.stop_loss_pct, 8),
-        "position_notional": (cfg.portfolio.position_notional, 625),
-        "max_positions": (cfg.portfolio.max_positions, 8),
-        "max_gross_exposure": (cfg.portfolio.max_gross_exposure, 5_000),
-        "max_crypto_positions": (cfg.portfolio.max_crypto_positions, 4),
-        "max_crypto_exposure": (cfg.portfolio.max_crypto_exposure, 2_500),
-        "max_stock_positions": (cfg.portfolio.max_stock_positions, 6),
-        "max_stock_exposure": (cfg.portfolio.max_stock_exposure, 3_750),
-        "correlation_window": (cfg.portfolio.correlation_window, 60),
-        "correlation_threshold": (cfg.portfolio.correlation_threshold, 0.80),
-        "correlation_matches_allowed": (cfg.portfolio.correlation_matches_allowed, 1),
-        "drawdown_halt_pct": (cfg.portfolio.drawdown_halt_pct, 5),
-        "stock_gap_limit_pct": (cfg.execution.stock_gap_limit_pct, 2),
-        "crypto_gap_limit_pct": (cfg.execution.crypto_gap_limit_pct, 3),
+        "starting_equity": (cfg.starting_equity, baseline["starting_equity"]),
+        "halt_recovery_drawdown_pct": (
+            cfg.portfolio.halt_recovery_drawdown_pct,
+            baseline["halt_recovery_drawdown_pct"],
+        ),
+        "halt_recovery_days": (
+            cfg.portfolio.halt_recovery_days,
+            baseline["halt_recovery_days"],
+        ),
+        "fast_window": (cfg.strategy.fast_window, baseline["fast_window"]),
+        "slow_window": (cfg.strategy.slow_window, baseline["slow_window"]),
+        "stop_loss_pct": (cfg.strategy.stop_loss_pct, baseline["stop_loss_pct"]),
+        "position_notional": (cfg.portfolio.position_notional, baseline["position_notional"]),
+        "max_positions": (cfg.portfolio.max_positions, baseline["max_positions"]),
+        "max_gross_exposure": (cfg.portfolio.max_gross_exposure, baseline["max_gross_exposure"]),
+        "max_crypto_positions": (cfg.portfolio.max_crypto_positions, baseline["max_crypto_positions"]),
+        "max_crypto_exposure": (cfg.portfolio.max_crypto_exposure, baseline["max_crypto_exposure"]),
+        "max_stock_positions": (cfg.portfolio.max_stock_positions, baseline["max_stock_positions"]),
+        "max_stock_exposure": (cfg.portfolio.max_stock_exposure, baseline["max_stock_exposure"]),
+        "correlation_window": (cfg.portfolio.correlation_window, baseline["correlation_window"]),
+        "correlation_threshold": (cfg.portfolio.correlation_threshold, baseline["correlation_threshold"]),
+        "correlation_matches_allowed": (
+            cfg.portfolio.correlation_matches_allowed,
+            baseline["correlation_matches_allowed"],
+        ),
+        "drawdown_halt_pct": (cfg.portfolio.drawdown_halt_pct, baseline["drawdown_halt_pct"]),
+        "stock_gap_limit_pct": (cfg.execution.stock_gap_limit_pct, baseline["stock_gap_limit_pct"]),
+        "crypto_gap_limit_pct": (cfg.execution.crypto_gap_limit_pct, baseline["crypto_gap_limit_pct"]),
     }
     changed = [name for name, (actual, expected) in frozen.items() if actual != expected]
     if changed:
-        raise RunConfigError(f"Run 2 frozen values changed: {', '.join(changed)}")
+        raise RunConfigError(
+            f"frozen values changed for run {cfg.run_id!r}: {', '.join(changed)}"
+        )
     if not cfg.strategy.require_fresh_cross_after_stop:
-        raise RunConfigError("Run 2 requires a fresh SMA cross after a stopped position")
+        raise RunConfigError("Live runs require a fresh SMA cross after a stopped position")
     if cfg.crypto_symbols != _RUN2_CRYPTO or cfg.stock_symbols != _RUN2_STOCKS:
-        raise RunConfigError("Run 2 watchlists do not match the archived 17-symbol baseline")
+        raise RunConfigError("Live watchlists must match the archived 17-symbol baseline")
