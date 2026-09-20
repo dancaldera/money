@@ -100,18 +100,26 @@ Logs: `results/paper_scan.log`, `results/stop_monitor.log`, `results/health.log`
 `results/morning_brief.log` (rotation keeps 2000 lines). Heartbeats: `results/.last_success_*`.
 
 Research/attribution scripts over the cached bars and the gitignored artifacts
-(both read-only, both regression-tested):
+(all read-only, all regression-tested):
 
 ```bash
 .venv/bin/python scripts/analysis_execution_gaps.py    # what the desk's slot costs per signal
 .venv/bin/python scripts/analysis_symbol_edge.py \
     --artifact results/exp-scale-2x/portfolio-backtest --notional 1250
+.venv/bin/python scripts/analysis_halt_episodes.py \
+    --artifact results/exp-slots-all-2x-recover/portfolio-backtest \
+    --run-config config/experiments/exp-slots-all-2x-recover.yaml
 ```
 
 The second one answers "should we cut the losing symbols?" with a walk-forward
 test (per-trade quality vs total dollars, plus a random-k control and split-half
 persistence). Measured answer so far: raising per-trade expectancy always lost
 dollars, see `docs/experiments.md`.
+
+The third prices a replay's drawdown halt — how many times it fired and how many
+sessions the desk sat flat waiting for the recovery rule — by re-running the same
+`halt_action` state machine the live service uses over an artifact's `equity.csv`.
+A latch manifest shows one episode that never resumes.
 
 `DRY_RUN=1` never advances `.last_success_paperscan` — it writes
 `.last_preview_paperscan` instead. The 22:00 catch-up guard decides on the success

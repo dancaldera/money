@@ -240,7 +240,9 @@ Findings:
 **Consequence:** run3 (opened 2026-09-19) implements this first step — breadth at
 the frozen size (17 slots, $10,625 gross) plus the recovery rule as insurance;
 run2 stays at 1x/8 slots as the archived predecessor. Any *further* size increase
-should still ship with a re-measured risk review.
+should still ship with a re-measured risk review — that review is now done, on the
+run3 basis and with the recovery rule the live run actually carries: see
+"Measured: the run3 basis scaled up" at the end of this file.
 
 ## Measured: the legs, re-simulated (stocks-only / crypto-only)
 
@@ -296,3 +298,72 @@ return/DD/expectancy/Sharpe at +10–12%.
 every live run). Adoption would ride a future run decision; breakeven@10 is the
 measured candidate, the trail is rejected. Until then the fixed 8% stop remains
 the desk's only downside rule and AMD-style gains stay unprotected above entry.
+
+## Measured: the run3 basis scaled up, with the recovery rule it ships
+
+The two ladders above price sizing on the *frozen 8-slot* basis and breadth on the
+*1x* basis, so the row that decides run3's next step — 17 slots with more dollars
+per slot — was missing. `exp-slots-all-2x` fills it on the one-way latch only
+(-4.47%, frozen at trade 70), which prices the halt, not the desk: run3 carries
+`halt_recovery_drawdown_pct: 2.5` / `halt_recovery_days: 20` from day one. These
+two manifests are that basis with the recovery rule switched on, everything else
+frozen:
+
+```bash
+.venv/bin/money portfolio-backtest --run-config config/experiments/exp-slots-all-2x-recover.yaml
+.venv/bin/money portfolio-backtest --run-config config/experiments/exp-slots-all-3x-recover.yaml
+.venv/bin/python scripts/analysis_halt_episodes.py \
+    --artifact results/exp-slots-all-2x-recover/portfolio-backtest \
+    --run-config config/experiments/exp-slots-all-2x-recover.yaml
+```
+
+2022-01-01 → 2026-09-19 (1723 sessions), same cached data for all three rows
+(control re-run in the same session, so the only difference is
+`position_notional` and its caps):
+
+| manifest | notional / gross (share of equity) | return | maxDD | ret/DD | trades | win% | expectancy | Sharpe | PF | DSR | halts / sessions flat |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| `exp-slots-all-recover` (= run3 values) | $625 / $10,625 (10.6%) | +10.36% | -2.79% | 3.71 | 364 | 30.2% | +$26.18 | 0.784 | 1.88 | 0.918 | 0 / 0 |
+| `exp-slots-all-2x-recover` | $1,250 / $21,250 (21.3%) | +19.82% | **-5.43%** | 3.65 | 364 | 30.8% | +$49.88 | 0.756 | 1.84 | 0.906 | 1 / 20 (1.2%) |
+| `exp-slots-all-3x-recover` | $1,875 / $31,875 (31.9%) | +27.96% | -8.45% | 3.31 | 356 | 29.8% | +$71.50 | 0.724 | 1.79 | 0.885 | 2 / 40 (2.3%) |
+| `exp-slots-all-2x` (same size, latch) | $1,250 / $21,250 | **-4.47%** | -5.23% | — | **70** | 17.1% | -$63.91 | — | 0.16 | — | latched forever |
+
+Halt episodes (from `scripts/analysis_halt_episodes.py`, same state machine as the
+live service): 2x halts once (2022-11-09, dd -5.23%) and resumes 20 days later;
+3x halts twice (2022-07-12, 2026-03-22, dd -5.08% / -5.02%), 20 sessions each. All
+three resumptions came from the **calendar** branch — at these sizes too, the
+drawdown branch never fires because a halted desk is flat, which is the design
+fact the run3 recovery rule was built around.
+
+Findings:
+
+1. **Doubling the run3 basis nearly doubles the dollars for ~2x the drawdown.**
+   $625 → $1,250 turns +10.36% into +19.82% (+$9.5k on the $100k account) while
+   maxDD goes -2.79% → -5.43%. Return per unit of drawdown is essentially
+   unchanged (3.71 → 3.65), the same "sizing buys dollars, not edge" result as
+   the ladder above — the trade count and win rate do not move (364 trades, 30%).
+2. **The recovery rule is what makes this row exist.** At the identical size the
+   one-way latch freezes the desk at trade 70 with -4.47%; with recovery the same
+   path takes 364 trades and +19.82% — a 24pp swing decided by the halt rule, not
+   by the signals. And the rule's bill is small: 20 sessions flat per halt, 1.2%
+   (2x) and 2.3% (3x) of the 4.7-year window.
+3. **3x is the point where the curve bends.** +27.96% for -8.45%: +8.1pp of return
+   over 2x for 3.0pp more drawdown (ratio 3.31 vs 3.65), two halts instead of one,
+   and the same "CI90 still crosses zero" caveat as every row here. The step from
+   1x to 2x is roughly risk-neutral in efficiency; the step from 2x to 3x is not.
+4. **Both rows still sit far below buy-and-hold** (+64.9% over the window), so this
+   chooses a risk path on a thin per-trade edge, not a proven alpha.
+
+**Consequence (human decision, unchanged mechanism):** a size step on run3 is a
+manifest change of the live run plus a reviewed registry entry — never an edit of
+`config/run3.yaml`. The measured candidate is **2x** (`position_notional: 1250`,
+caps ×2 to $21,250 gross, 21% of equity, recovery already in place): ~2x the
+dollars of the live row for ~2x the drawdown, one 20-session halt in 4.7y. 3x is
+available but pays 3pp more drawdown and a second halt for its extra 8pp; it needs
+a deliberate decision, not a default. Sizing up further does not change the edge,
+so the alternative — leave run3 at $625 and accept ~2.2%/yr — remains defensible
+until the per-trade expectancy is estimated more tightly.
+
+`tests/test_halt_episode_analysis.py` pins the halt state machine (latch,
+drawdown resume, calendar resume, a second halt after a re-baselined resume) and
+`tests/test_run2_experiments.py` pins both new manifests to the research path.
