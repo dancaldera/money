@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal
 import hashlib
 import json
 from typing import Any, Mapping
@@ -36,6 +36,28 @@ def _asset_from_broker_symbol(cfg: RunConfig, symbol: str) -> tuple[str, str]:
         if configured.replace("/", "") == target:
             return configured, asset
     return symbol, ""
+
+
+def crypto_buy_fee_in_kind(
+    cfg: RunConfig, qty: Decimal, price: Decimal
+) -> tuple[Decimal, Decimal]:
+    """Split a crypto buy fill into what was received and the in-kind fee.
+
+    Alpaca deducts the crypto taker fee from the asset received, so the position
+    always moves by ``qty * (1 - fee_bps/10_000)``: "the base crypto fee is .25%
+    which is the difference between .9975 and 1.0" (Alpaca forum, Alpaca staff).
+    Confirmed on the live paper account: an AAVE/USD buy activity of 4.409390845
+    units left a 4.398367367-unit position. A sell receives USD, so its fee comes
+    out of the proceeds instead and needs no adjustment.
+    """
+    rate = Decimal(str(cfg.execution.crypto_taker_fee_bps)) / Decimal(10_000)
+    received = qty * (Decimal(1) - rate)
+    # Alpaca holds crypto to 9 decimals and truncates the fee it took in kind
+    # (4.409390845 gross -> 4.398367367 held). Truncating the same way keeps the
+    # ledger qty equal to the broker's to the last digit, so a later full close
+    # leaves no dust position behind to block that symbol forever.
+    received = received.quantize(Decimal("0.000000001"), rounding=ROUND_DOWN)
+    return received, qty * price * rate
 
 
 def _feature_payload(
@@ -501,6 +523,7 @@ class Run2Service:
         after = run["started_at"] if run else None
         unknown_orders: list[str] = []
         new_fills = 0
+        new_fees = 0
         for activity in self.broker.activities("FILL", after):
             broker_order_id = str(activity.get("order_id", ""))
             order = self.ledger.order_by_broker_id(self.cfg.run_id, broker_order_id)
@@ -508,6 +531,37 @@ class Run2Service:
             fill_id = str(activity.get("id"))
             if not order:
                 unknown_orders.append(broker_order_id)
+            side = str(activity.get("side", ""))
+            qty = Decimal(str(activity.get("qty", 0)))
+            price = Decimal(str(activity.get("price", 0)))
+            # Alpaca charges the crypto taker fee in kind on a buy: it is deducted
+            # from the asset received, so the position always moves by
+            # qty * (1 - fee_bps/10_000) (see crypto_buy_fee_in_kind). Recording the
+            # raw activity qty made the ledger permanently 25bps richer than the
+            # broker, so this fail-closed check halted the run on its first crypto
+            # entry (run3, 2026-09-21) and would halt it on every one.
+            in_kind_fee = Decimal(0)
+            if asset == "crypto" and side == "buy":
+                qty, in_kind_fee = crypto_buy_fee_in_kind(self.cfg, qty, price)
+            if in_kind_fee:
+                new_fees += int(
+                    self.ledger.record_fee(
+                        {
+                            "fee_id": f"inkind-{fill_id}",
+                            "run_id": self.cfg.run_id,
+                            "broker_order_id": broker_order_id or None,
+                            "symbol": symbol,
+                            "activity_type": "CFEE",
+                            "amount": str(in_kind_fee),
+                            "occurred_at": str(
+                                activity.get("transaction_time") or utc_now()
+                            ),
+                            # The gross activity is the evidence for the in-kind
+                            # deduction; the fill row keeps only what was received.
+                            "raw_json": json.dumps(activity, default=str, sort_keys=True),
+                        }
+                    )
+                )
             new_fills += int(
                 self.ledger.record_fill(
                     {
@@ -519,9 +573,9 @@ class Run2Service:
                         "broker_order_id": broker_order_id,
                         "symbol": symbol,
                         "asset": asset,
-                        "side": str(activity.get("side", "")),
-                        "qty": str(activity.get("qty", 0)),
-                        "price": str(activity.get("price", 0)),
+                        "side": side,
+                        "qty": str(qty),
+                        "price": str(price),
                         "transaction_time": str(activity.get("transaction_time") or utc_now()),
                     }
                 )
@@ -545,7 +599,6 @@ class Run2Service:
             elif status in {"canceled", "expired", "rejected", "done_for_day"}:
                 decision_status = "rejected" if status == "rejected" else "expired"
                 self.ledger.set_decision_status(decision_id, decision_status, f"broker:{status}")
-        new_fees = 0
         for activity_type in ("CFEE", "FEE"):
             for activity in self.broker.activities(activity_type, after):
                 amount = abs(Decimal(str(activity.get("net_amount") or 0)))

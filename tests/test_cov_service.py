@@ -390,3 +390,96 @@ def test_record_account_snapshot_halts_past_drawdown(tmp_path):
         assert ledger.is_halted(cfg.run_id)
     finally:
         ledger.close()
+
+
+# --- crypto fills are fee-in-kind: the ledger must mirror the broker exactly ------------------ #
+def _crypto_exit(ledger, cfg, *, order_id, decision_id, side, qty, price, when):
+    ledger.record_order({"run_id": cfg.run_id, "decision_id": decision_id, "portfolio": "baseline",
+                         "client_order_id": f"c-{order_id}", "broker_order_id": order_id,
+                         "symbol": "AAVE/USD", "asset": "crypto", "side": side,
+                         "status": "filled"})
+    ledger.set_decision_status(decision_id, "submitted")
+    return {"id": f"fill-{order_id}", "order_id": order_id, "symbol": "AAVE/USD", "side": side,
+            "qty": qty, "price": price, "transaction_time": when}
+
+
+def _crypto_decision(ledger, cfg):
+    return ledger.record_decision({
+        "run_id": cfg.run_id, "portfolio": "baseline", "symbol": "AAVE/USD", "asset": "crypto",
+        "strategy": cfg.strategy.name, "bar_end": "2026-09-20T00:00:00+00:00", "signal": "BUY",
+        "signal_price": "141.742935", "notional": "625", "action": "buy_intent",
+        "status": "submitted", "config_hash": cfg.fingerprint,
+    })
+
+
+def test_reconcile_books_the_crypto_fee_deducted_in_kind(tmp_path):
+    """Alpaca deducts the crypto taker fee from the asset received, so the ledger
+    must record the net qty (and book the fee): recording the raw activity qty left
+    the ledger permanently 25bps richer than the broker, and reconcile's fail-closed
+    qty check then halted run3 on its first crypto entry (2026-09-21)."""
+    from decimal import Decimal
+
+    cfg, ledger = initialized_ledger(tmp_path)
+    broker = FakeBroker(equity=cfg.starting_equity)
+    rate = Decimal(str(cfg.execution.crypto_taker_fee_bps)) / Decimal(10_000)
+    gross = Decimal("4.409390845")
+    # What the live paper account actually held for that activity.
+    held = Decimal("4.398367367")
+    try:
+        decision_id = _crypto_decision(ledger, cfg)
+        activity = _crypto_exit(ledger, cfg, order_id="o-aave", decision_id=decision_id, side="buy",
+                                qty=str(gross), price="139.5", when="2026-09-21T00:58:37Z")
+        broker.activities = lambda kind, after=None: [activity] if kind == "FILL" else []
+        broker.all_orders = lambda after=None: [
+            {"id": "o-aave", "status": "filled", "filled_qty": float(gross)}
+        ]
+        broker.positions = lambda: [{"symbol": "AAVEUSD", "qty": str(held)}]
+
+        result = Run2Service(cfg, ledger, broker).reconcile()
+
+        assert result["quantity_mismatches"] == []
+        assert result["halted"] is False
+        assert result["new_fees"] == 1
+        fill = ledger.fills(cfg.run_id)[0]
+        assert Decimal(fill["qty"]) == held  # mirrors the broker to the last digit
+        assert Decimal(fill["qty"]) <= gross * (Decimal(1) - rate)  # never overstate
+        assert ledger.positions(cfg.run_id)["AAVE/USD"].qty == held
+        fee = ledger.fees(cfg.run_id)[0]
+        assert fee["activity_type"] == "CFEE"
+        assert Decimal(fee["amount"]) == gross * Decimal("139.5") * rate
+        assert "4.409390845" in fee["raw_json"]  # the gross activity stays as evidence
+    finally:
+        ledger.close()
+
+
+def test_reconcile_does_not_net_a_crypto_sell(tmp_path):
+    """A sell receives USD, so the fee comes out of the proceeds, not the base
+    asset: the sold qty is recorded as the broker reports it and closes the
+    position exactly."""
+    from decimal import Decimal
+
+    cfg, ledger = initialized_ledger(tmp_path)
+    broker = FakeBroker(equity=cfg.starting_equity)
+    rate = Decimal(str(cfg.execution.crypto_taker_fee_bps)) / Decimal(10_000)
+    net = Decimal("4.398367367")
+    try:
+        decision_id = _crypto_decision(ledger, cfg)
+        add_fill(ledger, cfg, "AAVE/USD", "crypto", "buy", net, 139.5, "fill-01")
+        activity = _crypto_exit(ledger, cfg, order_id="o-exit", decision_id=decision_id, side="sell",
+                                qty=str(net), price="120", when="2026-09-22T00:00:00Z")
+        broker.activities = lambda kind, after=None: [activity] if kind == "FILL" else []
+        broker.all_orders = lambda after=None: [
+            {"id": "o-exit", "status": "filled", "filled_qty": float(net)}
+        ]
+        broker.positions = lambda: []
+
+        result = Run2Service(cfg, ledger, broker).reconcile()
+
+        assert result["quantity_mismatches"] == []
+        assert result["halted"] is False
+        assert result["new_fees"] == 0
+        assert [Decimal(f["qty"]) for f in ledger.fills(cfg.run_id)][-1] == net
+        assert ledger.positions(cfg.run_id) == {}
+        assert rate  # the fee rate is what makes the buy netting above meaningful
+    finally:
+        ledger.close()

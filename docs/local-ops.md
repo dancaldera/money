@@ -155,6 +155,24 @@ run3 was bound the same way on 2026-09-19 (`money run-init --run-id run3
 --run-config config/run3.yaml --resume`), importing AAPL and AMD as its baseline
 fills; run2's ledger remains its archived evidence.
 
+## Clearing a halt
+
+A drawdown halt clears itself when the manifest opts into recovery. A
+`reconciliation_failed` halt does not — it is fail-closed, so the schedule will
+never clear it and no wrapper can. Diagnose it first (health + the ledger), fix
+the cause, then re-arm explicitly; the stated reason is kept on the run row as
+`resumed:<note>` and becomes the drawdown baseline:
+
+```bash
+.venv/bin/money health --run-id run3 --run-config config/run3.yaml
+.venv/bin/money reconcile --run-id run3 --run-config config/run3.yaml
+.venv/bin/money run-rearm --run-id run3 --run-config config/run3.yaml --note "why"
+```
+
+First real case (2026-09-21): the crypto taker fee is deducted in kind, so a
+crypto buy filled 25bps fewer units than the activity reported and the qty check
+latched the run — see [docs/run2.md](run2.md).
+
 ## Repo & push policy
 
 - Objective of the morning agent: **make money** (paper P&L). It measures the ledger,

@@ -111,6 +111,7 @@ money collect-context --run-id run2
 money paper-scan --run-id run2 --strategy sma_cross --dry-run
 money execute-intents --run-id run2 --asset crypto --dry-run
 money reconcile --run-id run2
+money run-rearm --run-id run2 --note "why a latched halt is cleared"
 money run-report --run-id run2
 money portfolio-backtest --run-id run2        # synchronized $10k portfolio replay
 ```

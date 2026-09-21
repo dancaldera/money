@@ -266,6 +266,43 @@ def test_cmd_reconcile_run(monkeypatch, capsys):
     assert "new_fills: 2" in capsys.readouterr().out
 
 
+def test_cmd_run_rearm_clears_an_explained_halt(monkeypatch, capsys):
+    class _RearmLedger:
+        def __init__(self, halted):
+            self.halted = halted
+            self.resumed = []
+            self.closed = False
+
+        def assert_manifest(self, cfg):
+            return {"halted_at": "2026-09-21T14:01:37+00:00",
+                    "halt_reason": "reconciliation_failed:unknown_orders=[],qty=['AAVEUSD']"}
+
+        def is_halted(self, run_id):
+            return self.halted
+
+        def resume(self, run_id, note):
+            self.resumed.append((run_id, note))
+            self.halted = False
+
+        def close(self):
+            self.closed = True
+
+    halted = _RearmLedger(halted=True)
+    _patch_run2(monkeypatch, ledger=halted)
+    cli_mod.cmd_run_rearm(SimpleNamespace(note="crypto taker fee is charged in kind"), {})
+    out = capsys.readouterr().out
+    assert "Re-armed run run2" in out
+    assert "reconciliation_failed" in out
+    assert halted.resumed == [("run2", "resumed:crypto taker fee is charged in kind")]
+    assert halted.closed
+
+    active = _RearmLedger(halted=False)
+    _patch_run2(monkeypatch, ledger=active)
+    cli_mod.cmd_run_rearm(SimpleNamespace(note="nothing was wrong"), {})
+    assert "nothing to re-arm" in capsys.readouterr().out
+    assert active.resumed == []
+
+
 def test_cmd_run_report_json_and_text(monkeypatch, capsys):
     import trading.run2.portfolio as portfolio_mod
     import trading.run2.reporting as reporting_mod

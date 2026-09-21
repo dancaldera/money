@@ -715,6 +715,30 @@ def cmd_reconcile_run(args, cfg):
         ledger.close()
 
 
+def cmd_run_rearm(args, cfg):
+    """Re-arm a halted run after an explained halt (operator decision).
+
+    A drawdown halt clears itself when the manifest opts into recovery. A
+    reconciliation halt is deliberately latched — fail-closed — so nothing on
+    the schedule can clear it: it needs an operator who has explained *why*.
+    The reason is kept on the run row as ``resumed:<note>`` and becomes the
+    drawdown baseline, so the lost peak is not re-measured after the re-arm.
+    """
+    run_cfg, ledger, service = _run2(args, with_broker=False)
+    try:
+        run = ledger.assert_manifest(run_cfg)
+        if not ledger.is_halted(run_cfg.run_id):
+            print(f"\nRun {run_cfg.run_id} is already active — nothing to re-arm.\n")
+            return
+        note = f"resumed:{args.note}"
+        ledger.resume(run_cfg.run_id, note)
+        print(f"\nRe-armed run {run_cfg.run_id}")
+        print(f"  was halted at {run['halted_at']}: {run['halt_reason']}")
+        print(f"  now active; drawdown re-baselined from {note}\n")
+    finally:
+        ledger.close()
+
+
 def cmd_run_report(args, cfg):
     from .run2.reporting import collect_run_report, render_run_report
     from .run2.portfolio import primary_benchmark
@@ -910,6 +934,16 @@ def build_parser() -> argparse.ArgumentParser:
     rr.add_argument("--run-id", default="run2")
     rr.add_argument("--run-config", help="frozen run manifest (default config/run2.yaml)")
     rr.set_defaults(func=cmd_reconcile_run)
+
+    ra = sub.add_parser(
+        "run-rearm",
+        help="re-arm a halted run after an explained halt (the reason is kept as evidence)",
+    )
+    ra.add_argument("--run-id", default="run2")
+    ra.add_argument("--run-config", help="frozen run manifest (default config/run2.yaml)")
+    ra.add_argument("--note", required=True,
+                    help="why this halt is cleared (stored on the run row as resumed:<note>)")
+    ra.set_defaults(func=cmd_run_rearm)
 
     rp = sub.add_parser("run-report", help="render portfolio and statistical Run 2 metrics")
     rp.add_argument("--run-id", default="run2")

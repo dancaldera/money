@@ -135,8 +135,29 @@ cost basis are rebuilt from fills rather than Alpaca's position cost-basis
 field. Repeated activity imports are idempotent.
 
 Reconciliation halts entries if it sees an unknown fill/order or a quantity
-mismatch between Alpaca and the internal ledger. Investigate the log and ledger;
-do not edit the database manually or simply unhalt the run.
+mismatch between Alpaca and the internal ledger. Investigate the log and ledger
+first; never edit the database to make a check pass.
+
+One mismatch is modelled rather than a bug to chase: Alpaca charges the crypto
+taker fee **in kind on a buy**, deducting it from the asset received — "the base
+crypto fee is .25% which is the difference between .9975 and 1.0" (Alpaca forum).
+The broker therefore holds `activity_qty * (1 - fee_bps/10_000)`: a 4.409390845
+AAVE/USD activity left a 4.398367367-unit position (2026-09-21). `reconcile`
+records that net qty, truncated to the 9 decimals Alpaca holds, and books the fee
+as a `CFEE` row whose `raw_json` keeps the gross activity as evidence. Recording
+the raw activity qty instead left the ledger 25bps richer than the broker and
+halted run3 on its very first crypto entry — and it would have halted it on every
+one, because the gap never closes. Sells receive USD, so their fee comes out of
+the proceeds and their qty is recorded as reported.
+
+A reconciliation halt is not cleared by the schedule (by design). Once the cause
+is understood and fixed, an operator re-arms the run explicitly, and the reason
+is kept on the run row as `resumed:<note>` — which also re-baselines the drawdown:
+
+```bash
+.venv/bin/money run-rearm --run-id run3 --run-config config/run3.yaml \
+  --note "why this halt is cleared"
+```
 
 ## Halt semantics (and the opt-in recovery rule)
 
@@ -160,7 +181,8 @@ portfolio:
   halt_recovery_days: 20            # or after 20 calendar days, whichever first
 ```
 
-- Only drawdown halts recover; a reconciliation halt stays latched.
+- Only drawdown halts recover by themselves; a reconciliation halt stays latched
+  until an operator re-arms it with `money run-rearm` and a stated reason.
 - The cooldown is what actually fires. A halted desk is flat, so its equity
   cannot rise and `halt_recovery_drawdown_pct` alone is inert (measured,
   `docs/experiments.md`).
