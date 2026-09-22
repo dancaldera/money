@@ -23,6 +23,50 @@ def _d(value: Any) -> Decimal:
     return Decimal(str(value or 0))
 
 
+# An in-kind crypto fee is booked at fill time with this fee_id prefix (see
+# Run2Service.reconcile): it is the copy linked to an order, so trade-level P&L
+# nets it, while the broker's own activity row carries no order id.
+INKIND_FEE_PREFIX = "inkind-"
+# The two copies of one in-kind charge differ only by the rounding of the net
+# qty, so a 2% tolerance pairs them without ever pairing two distinct fees.
+FEE_RESTATEMENT_TOLERANCE = Decimal("0.02")
+
+
+def fee_symbol(symbol: Any) -> str:
+    """Key fee rows for one asset across broker/config spellings (BTCUSD, BTC/USD)."""
+    return str(symbol or "").replace("/", "").upper()
+
+
+def restates_in_kind_fee(row: sqlite3.Row) -> bool:
+    """True when an activity fee row re-states an in-kind charge, adding no cash cost.
+
+    Alpaca charges the crypto taker fee on what the trade credits — "charged on
+    the credited crypto asset/fiat (what you receive)" (docs: Crypto Spot Trading
+    Fees) — so a buy pays it inside the asset received. The charge reaches the
+    activity feed as a CFEE row whose ``net_amount`` is 0 because no USD moved
+    (the amount is qty x price in the asset). A fee that moves cash — a stock
+    fee, or a crypto sell charged on the USD proceeds — carries a net_amount and
+    is never a restatement.
+    """
+    if str(row["activity_type"]).upper() not in {"CFEE", "FEE"}:
+        return False
+    try:
+        raw = json.loads(row["raw_json"] or "{}")
+    except (TypeError, ValueError):
+        return False
+    return isinstance(raw, dict) and "net_amount" in raw and _d(raw["net_amount"]) == 0
+
+
+def _pop_matching_amount(candidates: list[Decimal], amount: Decimal) -> Decimal | None:
+    """Remove and return the booked in-kind amount that ``amount`` re-states, if any."""
+    for index, candidate in enumerate(candidates):
+        if candidate == 0:
+            continue
+        if abs(candidate - amount) <= abs(candidate) * FEE_RESTATEMENT_TOLERANCE:
+            return candidates.pop(index)
+    return None
+
+
 @dataclass(frozen=True)
 class Position:
     portfolio: str
@@ -439,8 +483,36 @@ class RunLedger:
         return out
 
     def total_fees(self, run_id: str) -> Decimal:
-        rows = self.conn.execute("SELECT amount FROM fees WHERE run_id=?", (run_id,))
-        return sum((_d(r["amount"]) for r in rows), Decimal(0))
+        """Sum recorded fees, counting an in-kind crypto charge exactly once.
+
+        A crypto buy pays the taker fee inside the asset received, so one charge
+        is stored twice: booked from the fill's net qty (fee_id ``inkind-…``, the
+        copy that carries the order id and therefore the copy trade-level P&L
+        nets) and again as the broker's CFEE activity hours later. Summing both
+        reported twice the real crypto cost — $9.14 against a true $4.57 on run3
+        (2026-09-22) — which misreads the cost hurdle that sizes crypto breadth.
+        Each booked in-kind amount absorbs at most one matching activity row, so
+        two buys of one symbol still count two fees.
+        """
+        rows = list(
+            self.conn.execute(
+                "SELECT * FROM fees WHERE run_id=? ORDER BY occurred_at, fee_id",
+                (run_id,),
+            )
+        )
+        booked: dict[str, list[Decimal]] = {}
+        for row in rows:
+            if str(row["fee_id"]).startswith(INKIND_FEE_PREFIX):
+                booked.setdefault(fee_symbol(row["symbol"]), []).append(_d(row["amount"]))
+        total = Decimal(0)
+        for row in rows:
+            amount = _d(row["amount"])
+            if not str(row["fee_id"]).startswith(INKIND_FEE_PREFIX) and restates_in_kind_fee(row):
+                candidates = booked.get(fee_symbol(row["symbol"]))
+                if candidates and _pop_matching_amount(candidates, amount) is not None:
+                    continue  # same charge as an in-kind booking already counted
+            total += amount
+        return total
 
     def fees(self, run_id: str) -> list[sqlite3.Row]:
         return list(

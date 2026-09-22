@@ -483,3 +483,47 @@ def test_reconcile_does_not_net_a_crypto_sell(tmp_path):
         assert rate  # the fee rate is what makes the buy netting above meaningful
     finally:
         ledger.close()
+
+
+def test_reconcile_counts_the_activity_copy_of_an_in_kind_fee_once(tmp_path):
+    """End to end on the live path: reconcile books the in-kind crypto fee from the
+    fill's net qty, then — hours later, as Alpaca publishes it — ingests the same
+    charge as a CFEE activity with net_amount 0 (no USD moved). The ledger keeps
+    both rows as the broker's record; the fee metric must not add them: run3
+    reported $9.14 of fees against a true $4.57 on 2026-09-22, which doubled the
+    crypto cost hurdle behind the breadth decision."""
+    from decimal import Decimal
+
+    cfg, ledger = initialized_ledger(tmp_path)
+    broker = FakeBroker(equity=cfg.starting_equity)
+    rate = Decimal(str(cfg.execution.crypto_taker_fee_bps)) / Decimal(10_000)
+    gross = Decimal("4.409390845")
+    held = Decimal("4.398367367")
+    booked = gross * Decimal("139.5") * rate
+    try:
+        decision_id = _crypto_decision(ledger, cfg)
+        activity = _crypto_exit(ledger, cfg, order_id="o-aave", decision_id=decision_id, side="buy",
+                                qty=str(gross), price="139.5", when="2026-09-21T00:58:37Z")
+        broker.all_orders = lambda after=None: [
+            {"id": "o-aave", "status": "filled", "filled_qty": float(gross)}
+        ]
+        broker.positions = lambda: [{"symbol": "AAVEUSD", "qty": str(held)}]
+        broker.activities = lambda kind, after=None: [activity] if kind == "FILL" else []
+        assert Run2Service(cfg, ledger, broker).reconcile()["new_fees"] == 1
+        assert ledger.total_fees(cfg.run_id) == booked
+
+        # The activity feed catches up with the charge the fill already paid in kind.
+        broker_fee = {"id": "20260921000000000::e9e03c85", "activity_type": "CFEE",
+                      "net_amount": "0", "symbol": "AAVEUSD", "qty": "-0.011023478",
+                      "price": "139.5", "date": "2026-09-21"}
+        broker.activities = lambda kind, after=None: (
+            [activity] if kind == "FILL" else ([broker_fee] if kind == "CFEE" else [])
+        )
+        result = Run2Service(cfg, ledger, broker).reconcile()
+
+        assert result["new_fees"] == 1  # the broker's own row is still recorded
+        assert result["halted"] is False
+        assert len(ledger.fees(cfg.run_id)) == 2
+        assert ledger.total_fees(cfg.run_id) == booked  # the one charge, counted once
+    finally:
+        ledger.close()

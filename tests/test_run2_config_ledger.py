@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import replace
+from decimal import Decimal
 import json
 
 import pytest
 import yaml
 
 from trading.run2.config import RunConfigError, load_run_config
-from trading.run2.ledger import LedgerError
+from trading.run2.ledger import INKIND_FEE_PREFIX, LedgerError
 
 from .run2_helpers import add_fill, initialized_ledger, run2_config
 
@@ -95,5 +96,104 @@ def test_decision_and_fee_events_are_idempotent(tmp_path):
         }
         assert ledger.record_fee(fee) and not ledger.record_fee(fee)
         assert ledger.total_fees(cfg.run_id) == 1.25
+    finally:
+        ledger.close()
+
+
+# --- one crypto charge, two stored rows: the fee metric must count it once -------------------- #
+def _fee_row(cfg, fee_id, symbol, amount, *, activity_type="CFEE", raw=None):
+    return {
+        "fee_id": fee_id,
+        "run_id": cfg.run_id,
+        "symbol": symbol,
+        "activity_type": activity_type,
+        "amount": str(amount),
+        "occurred_at": "2026-09-22T00:36:26Z",
+        "raw_json": json.dumps({"activity_type": activity_type} if raw is None else raw),
+    }
+
+
+def test_total_fees_counts_an_in_kind_crypto_fee_once(tmp_path):
+    """The live AAVE/BTC/LINK pairs: the ledger books the crypto taker fee from the
+    fill's net qty (fee_id inkind-…, the copy an order is attached to) and Alpaca
+    separately reports the same charge as a CFEE activity whose net_amount is 0 —
+    no USD moved, the fee was taken inside the asset received. Summing both made
+    run3 report $9.14 of fees against a true $4.57, doubling the cost hurdle that
+    sizes the crypto breadth decision."""
+    cfg, ledger = initialized_ledger(tmp_path)
+    booked = Decimal("1.51441313589351")  # gross qty x price x 25bps
+    reported = Decimal("1.51442041402")  # the broker's copy, off by the rounded net qty
+    try:
+        ledger.record_fee(_fee_row(cfg, f"{INKIND_FEE_PREFIX}f-btc", "BTC/USD", booked))
+        ledger.record_fee(
+            _fee_row(cfg, "20260922000000000::btc", "BTCUSD", reported,
+                     raw={"net_amount": "0", "qty": "-0.000017518"})
+        )
+        assert ledger.total_fees(cfg.run_id) == booked
+
+        # Two buys of one symbol stay two fees: a booking absorbs one copy each.
+        for suffix in ("a", "b"):
+            ledger.record_fee(
+                _fee_row(cfg, f"{INKIND_FEE_PREFIX}f-link-{suffix}", "LINK/USD", Decimal("1.5"))
+            )
+        ledger.record_fee(
+            _fee_row(cfg, "20260922000000000::link", "LINKUSD", Decimal("1.5"), raw={"net_amount": "0"})
+        )
+        assert ledger.total_fees(cfg.run_id) == booked + Decimal("3.0")
+    finally:
+        ledger.close()
+
+
+def test_total_fees_keeps_cash_fees_and_unpaired_fees(tmp_path):
+    """Only a net_amount-0 CFEE/FEE row matching a booked in-kind amount is a copy.
+    A fee that moves cash (a crypto sell charged on the USD proceeds, any stock
+    fee), a buy whose booking never happened, and a row off by more than rounding
+    all stay in the total, so the metric can only ever lose duplicates."""
+    cfg, ledger = initialized_ledger(tmp_path)
+    try:
+        # a cash fee coexists with the symbol's in-kind buy booking
+        ledger.record_fee(
+            _fee_row(cfg, f"{INKIND_FEE_PREFIX}f-aave", "AAVE/USD", Decimal("1.53777505719375"))
+        )
+        ledger.record_fee(
+            _fee_row(cfg, "2026::aave-cash", "AAVEUSD", Decimal("1.537775181"),
+                     raw={"net_amount": "-1.537775181"})
+        )
+        # no booking for this symbol: the activity is the only record of the cost
+        ledger.record_fee(_fee_row(cfg, "2026::doge", "DOGEUSD", Decimal("2.0"), raw={"net_amount": "0"}))
+        # off by far more than rounding: a distinct fee, not a copy
+        ledger.record_fee(_fee_row(cfg, f"{INKIND_FEE_PREFIX}f-eth", "ETH/USD", Decimal("1.0")))
+        ledger.record_fee(_fee_row(cfg, "2026::eth", "ETHUSD", Decimal("1.5"), raw={"net_amount": "0"}))
+        # a zero booking absorbs nothing
+        ledger.record_fee(_fee_row(cfg, f"{INKIND_FEE_PREFIX}f-xrp-0", "XRP/USD", Decimal("0")))
+        ledger.record_fee(_fee_row(cfg, f"{INKIND_FEE_PREFIX}f-xrp-1", "XRP/USD", Decimal("1.0")))
+        ledger.record_fee(_fee_row(cfg, "2026::xrp", "XRPUSD", Decimal("1.0"), raw={"net_amount": "0"}))
+        assert ledger.total_fees(cfg.run_id) == (
+            Decimal("1.53777505719375")
+            + Decimal("1.537775181")
+            + Decimal("2.0")
+            + Decimal("1.0")
+            + Decimal("1.5")
+            + Decimal("1.0")
+        )
+    finally:
+        ledger.close()
+
+
+def test_total_fees_counts_rows_that_cannot_be_a_crypto_restatement(tmp_path):
+    """Rows with no usable broker payload (broken json, a non-dict payload, no
+    net_amount) or a non-fee activity type are always counted."""
+    cfg, ledger = initialized_ledger(tmp_path)
+    try:
+        ledger.record_fee(_fee_row(cfg, f"{INKIND_FEE_PREFIX}f-sol", "SOL/USD", Decimal("1.0")))
+        ledger.record_fee(
+            _fee_row(cfg, "2026::sol-int", "SOLUSD", Decimal("1.0"),
+                     activity_type="INT", raw={"net_amount": "0"})
+        )
+        for label, raw_text in (("a", "{not json"), ("b", "5"), ("c", json.dumps({"id": "x"}))):
+            row = _fee_row(cfg, f"2026-{label}::avax", "AVAXUSD", Decimal("2.0"))
+            row["raw_json"] = raw_text
+            ledger.record_fee(row)
+        assert ledger.total_fees(cfg.run_id) == Decimal("8.0")
     finally:
         ledger.close()

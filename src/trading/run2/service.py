@@ -13,7 +13,7 @@ import pandas as pd
 from ..live.broker import PaperBroker, quantize_limit_price
 from ..strategies.base import sma_cross_signal
 from .config import RunConfig
-from .ledger import RunLedger, utc_now
+from .ledger import INKIND_FEE_PREFIX, RunLedger, utc_now
 from .risk import DRAWDOWN_HALT_PREFIX, check_entry, drawdown_pct, halt_action
 
 
@@ -547,7 +547,7 @@ class Run2Service:
                 new_fees += int(
                     self.ledger.record_fee(
                         {
-                            "fee_id": f"inkind-{fill_id}",
+                            "fee_id": f"{INKIND_FEE_PREFIX}{fill_id}",
                             "run_id": self.cfg.run_id,
                             "broker_order_id": broker_order_id or None,
                             "symbol": symbol,

@@ -150,6 +150,16 @@ halted run3 on its very first crypto entry — and it would have halted it on ev
 one, because the gap never closes. Sells receive USD, so their fee comes out of
 the proceeds and their qty is recorded as reported.
 
+That one charge is stored twice on purpose and counted once: the in-kind booking
+(from the fill's net qty, the copy an order is attached to, so trade-level P&L
+nets it) and the broker's own `CFEE` activity, which arrives hours later with
+`net_amount: 0` because no USD moved. `total_fees` pairs them by symbol and
+amount (2% tolerance) and counts the charge once — summing both reported $9.14 of
+fees against a true $4.57 on run3 (2026-09-22), doubling the crypto cost hurdle
+that decides how much breadth crypto deserves. Only a `net_amount`-0 activity row
+that matches a booked in-kind amount can be absorbed, so cash fees (a crypto sell
+charged on the USD proceeds, any stock fee) and unpaired rows always count.
+
 A reconciliation halt is not cleared by the schedule (by design). Once the cause
 is understood and fixed, an operator re-arms the run explicitly, and the reason
 is kept on the run row as `resumed:<note>` — which also re-baselines the drawdown:

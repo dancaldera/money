@@ -367,3 +367,34 @@ until the per-trade expectancy is estimated more tightly.
 `tests/test_halt_episode_analysis.py` pins the halt state machine (latch,
 drawdown resume, calendar resume, a second halt after a re-baselined resume) and
 `tests/test_run2_experiments.py` pins both new manifests to the research path.
+
+## Measured: the fee bill by leg, on the run3 basis
+
+The ladder above is already fee-net (the replay charges `crypto_taker_fee_bps` /
+`equity_slippage_bps` per side), but it never says *where* the cost lands. Split it
+by asset class on the live configuration — 17 slots x $625, through 2026-09-18 —
+with the shipped tool:
+
+```bash
+.venv/bin/python scripts/analysis_symbol_edge.py \
+    --artifact results/exp-slots-all-recover/portfolio-backtest --notional 625
+```
+
+| leg | closing trades | P&L | mean/trade | % of notional | sell-side fees | fee share |
+|---|---|---|---|---|---|---|
+| stock | 161 | $4,533.90 | $28.16 | 4.51% | $52.63 | 13.7% |
+| crypto | 203 | $4,995.51 | $24.61 | 3.94% | $331.30 | 86.3% |
+
+Round-trip cost at this notional: **$3.21 crypto** (25bps x 2 sides) against
+**$0.63 stock** (5bps x 2), so crypto converts a smaller gross edge per trade
+($24.61 vs $28.16) at 5.1x the cost. Net per dollar deployed per round trip:
+**3.42% crypto vs 4.40% stock** — the equity leg earns ~29% more per dollar, and
+crypto consumes 86% of the desk's fee bill while supplying 56% of its trades.
+
+Reading: this is not a case for pruning crypto (it still contributes ~49% of net
+dollars, the same "dollars = trade count x deployment" arithmetic as the symbol
+section, and its low correlation is what the correlation guard is for). It is the
+case for **pricing crypto breadth honestly before widening it**, and for testing a
+per-asset notional *tilt* (cheaper leg larger at the same gross) rather than a
+uniform size step — a mechanism the manifests do not have yet, so it needs code
+plus a reviewed experiment before it can be measured.
