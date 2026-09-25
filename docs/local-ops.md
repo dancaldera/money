@@ -27,8 +27,8 @@ The macOS launchd agents were removed on purpose: one scheduler with visible sta
 | Job | Schedule | Mode |
 |---|---|---|
 | money · morning buy/hold/sell | every day at 09:00 | agent + `scripts/morning_brief.sh` (read-only resume in Hermes) |
-| money · daily paper run | every day at 18:35 | agent (terminal, workdir `~/money`) |
-| money · daily scan catch-up (silencioso) | every day at 22:00 | `no_agent` script (`scripts/cron_catchup_daily.sh`), only runs the desk if today never scanned |
+| money · daily paper run | every day at 18:35 | `no_agent` script (`~/.hermes/scripts/money_daily_run.sh` → `scripts/daily_paper_run.sh`) |
+| money · daily scan catch-up (silencioso) | every day at 22:00 | `no_agent` script (`scripts/cron_catchup_daily.sh`), only runs the desk if tonight's slot never scanned |
 | money · stop monitor (silencioso) | every 30 min | `no_agent` script |
 | money · health watchdog (silencioso) | every hour | `no_agent` script |
 | money · mejora diaria (agente) | every day at 08:00 | agent (objective: make money) |
@@ -60,22 +60,37 @@ bars over 199 stock signals, entering at +60min vs the official open drifts
 -0.035% mean / 0.000% median, so the delay is not costing money: do not move the
 slot on that theory.
 
-The 18:35 daily run is an **agent** job, so it can die before it ever reaches
-`daily_paper_run.sh` (model/API outage, credit exhaustion, inactivity timeout) and
-nothing trades. That is unrecoverable by design: `paper-scan` only evaluates the
-latest closed bar, so a fresh cross on the missed bar is never seen again. The
-22:00 catch-up guard closes that hole — it runs the wrapper only when today's
-`.last_success_paperscan` date is not today, which also makes it idempotent
-(a day that already scanned stays silent). Preview its decision with
+The 18:35 daily run is a **`no_agent` script** job on purpose. As an agent job it
+died before finishing the wrapper on the 600s inactivity watchdog (2026-09-22 and
+2026-09-24, `~/.hermes/cron/executions.db`: `idle for 909s (limit 600s)`), and the
+day's only scan became the 22:00 catch-up — the same bar, but a crypto entry ~3.4h
+later than the slot it was designed for, which is the drift the 18:35 slot exists
+to avoid. The failure mode is a property of the mode, not of the wrapper: the
+script job gets a 3600s budget and, unlike the agent, cannot die in the model API
+before it reaches the shell (that is how the 2026-09-10 scan was lost). Nothing is
+delivered on success anyway (`deliver: local`), so the agent half was invisible;
+the desk's report comes from the 09:00 morning brief.
+
+Failure is still permanent by design — `paper-scan` only evaluates the latest
+closed bar, so a fresh cross on the bar a missed slot never scanned is never seen
+again. The 22:00 catch-up guard is the second line: it runs the wrapper unless the
+`.last_success_paperscan` heartbeat is from **after today's slot time**, not merely
+from today (an early-in-the-day manual run must not silence it, and the re-run it
+allows is idempotent per bar). Preview its decision with
 `CHECK_ONLY=1 bash scripts/cron_catchup_daily.sh`.
+
+Job health has to be read from `~/.hermes/cron/executions.db`, not from
+`last_status`: check `started_at`/`finished_at` (a 909s outlier is a watchdog kill,
+a 400-1500s one is a hung broker/DNS call) and `cron_incidents` for the error text.
 
 Inspect: `hermes cron list` / `cronjob_manage(action='list')`. Trading jobs
 save locally (`deliver: local`). The 09:00 buy/hold/sell briefing posts into
 the Hermes chat it was created from (continuable).
 
 Hermes runs cron scripts only from `~/.hermes/scripts/`, so thin shims live
-there (`money_stop_monitor.sh`, `money_health.sh`, `money_morning_brief.sh`)
-and `exec` the repo scripts (`scripts/cron_silent_*.sh`,
+there (`money_stop_monitor.sh`, `money_health.sh`, `money_morning_brief.sh`,
+`money_daily_run.sh`)
+and `exec` the repo scripts (`scripts/cron_silent_*.sh`, `scripts/daily_paper_run.sh`,
 `scripts/morning_brief.sh`). Repo = single source of truth.
 
 The silent jobs use the watchdog pattern: nothing printed = nothing sent. They speak

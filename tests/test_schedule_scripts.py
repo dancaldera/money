@@ -9,6 +9,7 @@ tests pin every grep pattern in the silent cron scripts against real samples.
 
 from __future__ import annotations
 
+import datetime
 import os
 import re
 import subprocess
@@ -80,12 +81,24 @@ def test_morning_brief_is_read_only_and_covers_the_desk():
 CATCHUP = ROOT / "scripts" / "cron_catchup_daily.sh"
 
 
-def _run_catchup(hb: Path) -> subprocess.CompletedProcess:
+def _run_catchup(hb: Path, slot: str | None = None) -> subprocess.CompletedProcess:
     """Run the catch-up guard in CHECK_ONLY mode against a temp heartbeat."""
     env = dict(os.environ, PAPERSCAN_HEARTBEAT=str(hb), CHECK_ONLY="1")
+    if slot is not None:
+        env["SLOT_HHMM"] = slot
     return subprocess.run(
         ["bash", str(CATCHUP)], capture_output=True, text=True, env=env, cwd=str(ROOT)
     )
+
+
+def _stamp_today(hb: Path, hour: int, minute: int) -> None:
+    """Stamp the heartbeat with today's date at HH:MM.
+
+    The guard compares the heartbeat's *clock time* against the slot, so its
+    tests must control the time of day, not only the date.
+    """
+    moment = datetime.datetime.now().replace(hour=hour, minute=minute, second=0, microsecond=0)
+    os.utime(hb, (moment.timestamp(), moment.timestamp()))
 
 
 def _run_bash(snippet: str) -> str:
@@ -110,7 +123,10 @@ def test_dry_run_preview_never_advances_the_success_heartbeat(tmp_path):
 
     _run_bash(f'source scripts/_lib.sh; record_scan_success 0 "{success}" "{preview}"')
     assert success.read_text().strip().isdigit()
-    assert "skip" in _run_catchup(success).stdout
+    # A REAL success silences the guard. Its stamp is "now", so compare it against
+    # a slot the test has already passed (SLOT_HHMM hook) — the guard measures the
+    # scan against the slot time, not just the calendar day.
+    assert "skip" in _run_catchup(success, slot="00:00").stdout
 
 
 def test_daily_wrapper_records_success_through_the_preview_guard():
@@ -120,18 +136,38 @@ def test_daily_wrapper_records_success_through_the_preview_guard():
     assert 'heartbeat "$REPO_DIR/results/.last_success_paperscan"' not in text
 
 
-def test_catchup_is_silent_when_todays_scan_already_succeeded(tmp_path):
-    """Idempotence: any successful scan today (agent job or catch-up) silences it.
+def test_catchup_is_silent_when_the_slot_already_scanned(tmp_path):
+    """Idempotence: a scan AFTER today's slot silences it, whoever ran it (the
+    18:35 script job or an earlier catch-up).
 
-    The 18:35 daily run is an AGENT job, so it can die (model outage, inactivity
-    timeout) before it ever reaches the wrapper; this guard must never double-run
-    the desk on a day that already scanned. The no_agent cron job delivers stdout
-    verbatim, so the real path must print nothing.
+    The no_agent cron job delivers stdout verbatim, so the silent path must print
+    nothing but the CHECK_ONLY note. The heartbeat is a calendar stamp, so the
+    guard compares it against the slot TIME — a heartbeat from later today is
+    tonight's scan, a heartbeat from earlier today is not.
     """
     hb = tmp_path / "hb"
     hb.write_text("1")
+    _stamp_today(hb, 23, 55)  # after the 18:35 slot
     out = _run_catchup(hb).stdout
     assert "skip" in out and "WOULD RUN" not in out
+
+
+def test_catchup_runs_when_todays_only_scan_predates_the_slot(tmp_path):
+    """Money regression: a success from EARLIER today must not silence tonight.
+
+    `paper-scan` only evaluates the newest closed bar, so the bar the 18:35 slot
+    never scanned is a permanent signal loss (a fresh cross is required to
+    re-enter). An operator's manual run at 09:00 advances the same heartbeat the
+    slot writes, and a date-only comparison would treat it as proof that tonight
+    scanned — losing the bar silently. The re-run the guard then does is
+    idempotent per bar, so erring towards running costs a duplicate no-op scan,
+    never a lost entry.
+    """
+    hb = tmp_path / "hb"
+    hb.write_text("1")
+    _stamp_today(hb, 0, 5)  # today, before the 18:35 slot
+    out = _run_catchup(hb).stdout
+    assert "WOULD RUN" in out and "skip" not in out
 
 
 def test_catchup_would_run_when_heartbeat_is_stale_or_missing(tmp_path):
@@ -150,6 +186,9 @@ def test_catchup_check_only_never_runs_the_desk(tmp_path):
     text = CATCHUP.read_text()
     assert "daily_paper_run.sh" in text
     assert "CHECK_ONLY" in text
+    # the slot the guard backs up must stay overridable: the DST-free comparison
+    # and the tests both depend on it.
+    assert "SLOT_HHMM" in text
 
 
 def test_catchup_flags_a_wrapper_that_did_not_record(tmp_path):
