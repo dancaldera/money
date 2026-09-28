@@ -132,11 +132,41 @@ def _run2(args, with_broker: bool = False, allow_experiment: bool = False):
     return run_cfg, ledger, Run2Service(run_cfg, ledger, broker)
 
 
+def _recent_window_start(days: int = 400, today: date | None = None) -> str:
+    """Start date of the *live* bar window, stable for a whole calendar month.
+
+    The window reaches back ``days`` from the first of the current month, so the
+    key only rolls on the 1st. That stability matters for two reasons:
+
+    * the live loader passes ``refresh=True`` (freshness), so the file is
+      rewritten every run anyway — but with a stable key a previous successful
+      fetch *exists* to fall back on, which is what ``load_or_fetch`` promises
+      and what a daily key silently broke (the key ``today-400d`` changed every
+      day, so on a fetch failure today's key had no file at all and the scan
+      died instead of degrading to stale bars);
+    * a changing key wrote one new 400-day parquet per symbol per day (~17/day,
+      ~340 files) that nothing ever reused.
+
+    The window is never shorter than ``days``: it starts exactly ``days`` before
+    the 1st, so it grows to ``days + 30`` across a long month. The scan only
+    needs the SMA history, which is ~32 bars.
+    """
+    anchor = (today or date.today()).replace(day=1) - timedelta(days=days)
+    return anchor.isoformat()
+
+
 def _run2_bars(run_cfg, cfg: dict, *, refresh: bool = False, recent: bool = True):
-    """Load Run 2 bars exclusively from Alpaca, with stale-cache fallback."""
+    """Load Run 2 bars exclusively from Alpaca, with stale-cache fallback.
+
+    The recent (live) window starts on a month-anchored date so today's fetch
+    and the previous successful one share a cache key: a broker/network failure
+    degrades to the last cached bars (loud, and ``coverage_*`` then reports
+    ``behind=1``) instead of failing the whole scan — a failed scan is how a
+    completed bar is lost for good.
+    """
     bars = {}
     for symbol, asset in run_cfg.symbols:
-        since = (date.today() - timedelta(days=400)).isoformat() if recent else "2022-01-01"
+        since = _recent_window_start() if recent else "2022-01-01"
         key = f"alpaca_{asset}_{symbol}_1d_{since}"
         frame = load_or_fetch(
             key,

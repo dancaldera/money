@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from datetime import date
+
 import pandas as pd
 import pytest
 
@@ -78,9 +80,26 @@ def test_run2_bars_recent_and_full_history(monkeypatch):
     bars = cli_mod._run2_bars(cfg, {}, recent=True)
     assert set(bars) == {s for s, _ in cfg.symbols} and "SPY" not in bars
     assert all(refresh for _, refresh in keys)
+    assert all(key.endswith(cli_mod._recent_window_start()) for key, _ in keys)
     keys.clear()
     bars = cli_mod._run2_bars(cfg, {}, refresh=True, recent=False)
     assert "SPY" in bars and len(bars) == len(cfg.symbols) + 1
+
+
+def test_recent_window_start_is_month_stable():
+    """The live window key must not change every day, or the stale-cache
+    fallback can never fire (today's key has no file) and a new 400-day parquet
+    is written per symbol per day."""
+    same_month = [cli_mod._recent_window_start(today=date(2026, 9, d)) for d in (1, 15, 30)]
+    assert len(set(same_month)) == 1
+    assert same_month[0] == "2025-07-28"  # 2026-09-01 - 400d
+    # The key rolls once, on the 1st of the following month.
+    assert cli_mod._recent_window_start(today=date(2026, 10, 1)) == "2025-08-27"
+    assert cli_mod._recent_window_start(today=date(2026, 10, 31)) == "2025-08-27"
+    # The window is never shorter than the history the SMA scan needs.
+    for day in (1, 15, 30):
+        window = (date(2026, 9, day) - date.fromisoformat(same_month[0])).days
+        assert window >= 400
 
 
 # --- paper-scan / paper-stops run2 paths ------------------------------------------------ #

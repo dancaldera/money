@@ -152,6 +152,15 @@ age): a stuck intent permanently reserves exposure and blocks its symbol
 (`buy_already_pending`), so the watchdog alerts past `PENDING_MAX_AGE_H`
 (default 96h — a normal weekend plus slot jitter fits).
 
+The live bar window (`_run2_bars`, `recent=True`) starts 400 days before the 1st
+of the current month, so every run inside a month shares one cache key. The
+loader still refetches it on every run (freshness is the point), but a previous
+successful fetch is now on disk, so a broker/DNS failure degrades to those bars
+instead of failing the whole scan — the failure is loud (`coverage_*` reports
+`behind=1`, the watchdog alerts) and the next slot can still evaluate the bar.
+A per-day key (`today-400d`) silently disabled that fallback — today's key never
+had a file — and wrote one new 400-day parquet per symbol per day (~17/day).
+
 ## Mid-history account
 
 This account had already traded when the merged desk was bound, so plain
