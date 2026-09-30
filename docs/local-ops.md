@@ -28,9 +28,9 @@ The macOS launchd agents were removed on purpose: one scheduler with visible sta
 |---|---|---|
 | money · morning buy/hold/sell | every day at 09:00 | agent + `scripts/morning_brief.sh` (read-only resume in Hermes) |
 | money · daily paper run | every day at 18:35 | `no_agent` script (`~/.hermes/scripts/money_daily_run.sh` → `scripts/daily_paper_run.sh`) |
-| money · daily scan catch-up (silencioso) | every day at 22:00 | `no_agent` script (`scripts/cron_catchup_daily.sh`), only runs the desk if tonight's slot never scanned |
+| money · daily scan catch-up (silencioso) | every day at 22:00 | `no_agent` script (`scripts/cron_catchup_daily.sh`), runs the desk if tonight's slot never scanned |
 | money · stop monitor (silencioso) | every 30 min | `no_agent` script |
-| money · health watchdog (silencioso) | every hour | `no_agent` script |
+| money · health watchdog (silencioso) | every hour | `no_agent` script — alerts, and salvages a bar the ledger never evaluated (coverage mode of the same guard) |
 | money · mejora diaria (agente) | every day at 08:00 | agent (objective: make money) |
 
 ### Why 18:35 and not 17:00
@@ -94,7 +94,9 @@ and `exec` the repo scripts (`scripts/cron_silent_*.sh`, `scripts/daily_paper_ru
 `scripts/morning_brief.sh`). Repo = single source of truth.
 
 The silent jobs use the watchdog pattern: nothing printed = nothing sent. They speak
-only when a stop fires, the run halts, a heartbeat goes stale, or a wrapper fails.
+only when a stop fires, the run halts, a heartbeat goes stale, a wrapper fails, or
+the hourly health watchdog salvages a bar the ledger never evaluated (see
+"Catch-up and salvage" below).
 
 launchd equivalents are still in the repo for other machines: `scripts/com.money.*.plist`
 and `scripts/systemd/`.
@@ -161,6 +163,30 @@ all, see `docs/run2.md`) stay visible without alerting forever. A
 age): a stuck intent permanently reserves exposure and blocks its symbol
 (`buy_already_pending`), so the watchdog alerts past `PENDING_MAX_AGE_H`
 (default 96h — a normal weekend plus slot jitter fits).
+
+### Catch-up and salvage
+
+`cron_catchup_daily.sh` has two modes and one rule each, and both end in the same
+place (run `daily_paper_run.sh`, which is idempotent per bar):
+
+* **slot mode** (default, the 22:00 job): run the desk unless the success
+  heartbeat is from after today's 18:35 slot.
+* **coverage mode** (`COVERAGE_ONLY=1`, called by the hourly
+  `cron_silent_health.sh`): run the desk when `money health` reports any
+  `coverage_<scope>: ... behind=1`, i.e. the ledger never evaluated the newest
+  closed bar — regardless of the heartbeat. It stays silent and costs one
+  read-only health call while coverage is current, refuses to act inside the
+  bar-close window (18:00 CST close → 18:35 slot), and bounds retries with
+  `results/.last_salvage_attempt` (`SALVAGE_COOLDOWN_S`, default 1800s; stamped on
+  every attempt, success or failure).
+
+Why it exists: on 2026-09-29 the 18:35 run died on a full DNS outage (Alpaca *and*
+the CBOE VIX unresolvable), the 22:45 catch-up salvaged the bar, and nothing
+covered the case where that second run fails too. A report-only watchdog plus one
+evening slot leaves a ~24h hole — after the next bar closes, the skipped bar can
+never be scanned again (a fresh cross is required to re-enter), so the entry is
+lost for good. Preview either mode with `CHECK_ONLY=1` (plus `HEALTH_SNAPSHOT=`,
+`PAPERSCAN_HEARTBEAT=`, `PRE_SLOT_HHMM=`, `SALVAGE_STAMP=` to inject state).
 
 The live bar window (`_run2_bars`, `recent=True`) starts 400 days before the 1st
 of the current month, so every run inside a month shares one cache key. The

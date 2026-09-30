@@ -16,6 +16,8 @@ import subprocess
 import time
 from pathlib import Path
 
+import pytest
+
 from trading.run2.coverage import ScopeCoverage, bar_key
 
 from .run2_helpers import ROOT
@@ -241,3 +243,111 @@ def test_health_pending_line_drives_the_watchdog_sed():
     line = "  pending_intents: count=1 oldest=AMD oldest_age_h=76.4"
     assert _run_bash(f"printf '%s\\n' '{line}' | sed -n '{expr}'").strip() == "76.4"
     assert _run_bash(f"printf '%s\\n' '  pending_intents: count=0' | sed -n '{expr}'").strip() == ""
+
+
+def _health_line(scope: str, behind: bool) -> str:
+    """A real ``money health`` coverage line, from the CLI's own formatter."""
+    return ScopeCoverage(
+        scope=scope,
+        symbols=8,
+        newest_closed=bar_key("2026-09-29T00:00:00+00:00"),
+        newest_recorded=bar_key("2026-09-28T00:00:00+00:00" if behind else "2026-09-29T00:00:00+00:00"),
+        gaps=(),
+        recent=(),
+    ).health_line()
+
+
+def _run_salvage(
+    tmp_path,
+    *,
+    behind: bool,
+    stamp: Path | None = None,
+    pre_slot: str = "",
+    slot: str | None = None,
+) -> str:
+    """Run the catch-up guard in coverage mode, with the ledger state injected."""
+    snapshot = tmp_path / f"health_{behind}.txt"
+    snapshot.write_text(
+        _health_line("crypto", behind) + "\n" + _health_line("equity", False) + "\n"
+    )
+    env = dict(
+        os.environ,
+        CHECK_ONLY="1",
+        COVERAGE_ONLY="1",
+        HEALTH_SNAPSHOT=str(snapshot),
+        PAPERSCAN_HEARTBEAT=str(tmp_path / "hb_missing"),
+        SALVAGE_STAMP=str(stamp or tmp_path / "salvage_stamp"),
+        PRE_SLOT_HHMM=pre_slot,
+    )
+    if slot is not None:
+        env["SLOT_HHMM"] = slot
+    return subprocess.run(
+        ["bash", str(CATCHUP)], capture_output=True, text=True, env=env, cwd=str(ROOT)
+    ).stdout
+
+
+def test_coverage_salvage_acts_on_the_ledger_not_the_clock(tmp_path):
+    """The third line of defence: a slot that ran and still lost its bar.
+
+    2026-09-29: the 18:35 run died on a full DNS outage (Alpaca and the CBOE VIX
+    both unresolvable) and the 22:45 catch-up salvaged the bar. Had that second
+    run failed too, nothing was left — `health_check.sh` only *reports* a
+    `behind=1` coverage line, and once the next bar closes the skip is permanent
+    (`paper-scan` only ever evaluates the newest closed bar). So the hourly
+    watchdog now calls this guard in coverage mode: the heartbeat is irrelevant
+    here (it is missing in both cases below), the ledger's coverage line decides.
+    """
+    out = _run_salvage(tmp_path, behind=True)
+    assert "WOULD RUN" in out and "coverage behind on crypto" in out
+    assert "skip" not in out
+    # Coverage current: one read-only health call and nothing else (the hourly
+    # job must stay silent, its stdout is delivered verbatim).
+    quiet = _run_salvage(tmp_path, behind=False)
+    assert "skip (coverage ok" in quiet and "WOULD RUN" not in quiet
+
+
+def test_coverage_salvage_cannot_race_the_daily_slot(tmp_path):
+    """Inside the bar-close window (18:00 UTC close -> 18:35 slot) the scheduled
+    job owns the run: a cache that just advanced must not start a second scan
+    minutes before the slot, or the measured entry timing stops meaning anything.
+    """
+    now = datetime.datetime.now()
+    start, end = now - datetime.timedelta(minutes=10), now + datetime.timedelta(minutes=10)
+    if start.strftime("%H:%M") > end.strftime("%H:%M"):
+        pytest.skip("window wraps past midnight")
+    out = _run_salvage(
+        tmp_path, behind=True, pre_slot=start.strftime("%H:%M"), slot=end.strftime("%H:%M")
+    )
+    assert "bar-close window" in out and "WOULD RUN" not in out
+    # ...and outside it the same state still acts.
+    assert "WOULD RUN" in _run_salvage(tmp_path, behind=True)
+
+
+def test_coverage_salvage_bounds_retries_with_a_cooldown_stamp(tmp_path):
+    """A bar that stays unevaluated must not be retried into a storm: the stamp
+    is written on every attempt (success or failure), so the next hourly tick is
+    the earliest retry.
+    """
+    stamp = tmp_path / "salvage_stamp"
+    stamp.write_text("")
+    out = _run_salvage(tmp_path, behind=True, stamp=stamp)
+    assert "cooldown" in out and "WOULD RUN" not in out
+    text = CATCHUP.read_text()
+    assert 'touch "$SALVAGE_STAMP"' in text
+    # the stamp must be written before the failure branch can exit
+    assert text.index('touch "$SALVAGE_STAMP"') < text.index("catch-up FAILED")
+    # an attempt older than the cooldown is allowed through again
+    two_days = time.time() - 2 * 86400
+    os.utime(stamp, (two_days, two_days))
+    assert "WOULD RUN" in _run_salvage(tmp_path, behind=True, stamp=stamp)
+
+
+def test_hourly_watchdog_wires_the_salvage_in_coverage_mode():
+    """The salvage only exists if the hourly job actually calls it — and it must
+    not run the slot-mode rule there, where a heartbeat from earlier today would
+    be read as "tonight ran" (it is 00:00-18:35 that would fire every hour).
+    """
+    text = (ROOT / "scripts" / "cron_silent_health.sh").read_text()
+    assert "COVERAGE_ONLY=1 bash" in text
+    assert "cron_catchup_daily.sh" in text
+    assert "HEALTH_SNAPSHOT" not in text  # no test hook in the live path
