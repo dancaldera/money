@@ -335,6 +335,21 @@ three resumptions came from the **calendar** branch — at these sizes too, the
 drawdown branch never fires because a halted desk is flat, which is the design
 fact the run3 recovery rule was built around.
 
+Re-measured 2026-09-30 with the cache advanced to 2026-09-29 (1733 sessions) on
+the same three manifests, so the row that decides the next size step does not
+rest on a stale window:
+
+| manifest | return | maxDD | ret/DD | trades | win% | expectancy | Sharpe | PF | DSR | halts / sessions flat |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `exp-slots-all-recover` | +10.69% | -2.79% | 3.83 | 366 | 30.1% | +$25.75 | 0.802 | 1.86 | 0.927 | 0 / 0 |
+| `exp-slots-all-2x-recover` | +20.47% | -5.43% | 3.77 | 366 | 30.6% | +$49.03 | 0.773 | 1.82 | 0.916 | 1 / 20 (1.2%) |
+| `exp-slots-all-3x-recover` | +28.92% | -8.45% | 3.42 | 358 | 29.6% | +$70.21 | 0.741 | 1.78 | 0.896 | 2 / 40 (2.3%) |
+
+Ten more sessions lifted every row by less than a point and kept the ordering:
+2x is still the step that holds return per unit of drawdown, 3x is still where it
+bends, and the refreshed 2x halt is the same single episode (2022-11-09, flat 20
+sessions). The live run still trades the 1x row — 17 x $625.
+
 Findings:
 
 1. **Doubling the run3 basis nearly doubles the dollars for ~2x the drawdown.**
