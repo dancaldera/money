@@ -124,6 +124,7 @@ Research/attribution scripts over the cached bars and the gitignored artifacts
 .venv/bin/python scripts/analysis_halt_episodes.py \
     --artifact results/exp-slots-all-2x-recover/portfolio-backtest \
     --run-config config/experiments/exp-slots-all-2x-recover.yaml
+.venv/bin/python scripts/analysis_live_deployment.py   # live run: deployment + attribution
 ```
 
 The second one answers "should we cut the losing symbols?" with a walk-forward
@@ -135,6 +136,15 @@ The third prices a replay's drawdown halt — how many times it fired and how ma
 sessions the desk sat flat waiting for the recovery rule — by re-running the same
 `halt_action` state machine the live service uses over an artifact's `equity.csv`.
 A latch manifest shows one episode that never resumes.
+
+The fourth is the capital lens on the live run, which `run-report` does not show:
+positions against the frozen caps (slots, gross, per-asset), per-position
+market value and unrealised P&L marked to the newest recorded close, and a census
+of what the guards did with each fresh cross (allowed / blocked by which guard /
+filled / pending / expired). It is read-only and needs no broker or network call —
+if the live book is at 4% of equity, that ratio is what a size step has to move,
+and the scan census is the live evidence for whether a cap or the entry rule is
+holding it back.
 
 `DRY_RUN=1` never advances `.last_success_paperscan` — it writes
 `.last_preview_paperscan` instead. The 22:00 catch-up guard decides on the success
