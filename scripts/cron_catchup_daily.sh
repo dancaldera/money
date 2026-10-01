@@ -35,6 +35,15 @@
 #     bar close makes the skip permanent. It refuses to race the slot inside the
 #     bar-close window (18:00 CST bar close -> 18:35 slot), where the scheduled
 #     job owns the run, and a stamp file bounds retries to one per cooldown.
+#     A gap must also be *confirmed on a later tick* (SALVAGE_CONFIRM_S): a bar
+#     that has just closed is behind=1 by construction, and the window check
+#     cannot see a late slot. Measured 2026-09-30: the 18:35 slot ran 9m late, so
+#     the watchdog's 18:45 tick read behind=1 while the slot was still collecting
+#     context and started a full duplicate desk run (watchdog 18:44:58 ->
+#     21:32:23 — two contexts, two scans of the same bar, the second one
+#     idempotent but wasteful). One tick of delay still leaves ~23h before that
+#     bar's skip becomes permanent, and a gap that clears on its own (the slot
+#     scans) deletes the marker.
 #
 # Designed for a no_agent Hermes cronjob — empty stdout means "send nothing".
 # Test hooks: PAPERSCAN_HEARTBEAT overrides the heartbeat path, SLOT_HHMM
@@ -60,19 +69,25 @@ COVERAGE_ONLY="${COVERAGE_ONLY:-0}"
 PRE_SLOT_HHMM="${PRE_SLOT_HHMM:-18:00}"
 SALVAGE_STAMP="${SALVAGE_STAMP:-$REPO_DIR/results/.last_salvage_attempt}"
 SALVAGE_COOLDOWN_S="${SALVAGE_COOLDOWN_S:-1800}"
+# Coverage has to be seen behind on a LATER tick before the guard acts: a bar
+# that just closed reports behind=1 while the slot is still collecting context.
+COVERAGE_CONFIRM_STAMP="${COVERAGE_CONFIRM_STAMP:-$REPO_DIR/results/.last_coverage_behind}"
+SALVAGE_CONFIRM_S="${SALVAGE_CONFIRM_S:-3000}"
 HEALTH_SNAPSHOT="${HEALTH_SNAPSHOT:-}"
 MONEY="$([ -x "$REPO_DIR/.venv/bin/money" ] && echo "$REPO_DIR/.venv/bin/money" || echo money)"
 
 coverage_behind_scopes() {
   # Same contract as health_check.sh: one `coverage_<scope>:` line per asset
   # scope, `behind=1` meaning the ledger never evaluated the newest closed bar.
-  local out
-  if [ -n "$HEALTH_SNAPSHOT" ]; then
-    out="$(cat "$HEALTH_SNAPSHOT" 2>/dev/null)"
-  else
-    out="$("$MONEY" health --run-id "$RUN_ID" --run-config "$RUN_CONFIG" 2>&1)"
-  fi
-  printf '%s\n' "$out" | sed -n 's/^ *coverage_\([a-z]*\): .*behind=1.*/\1/p' | tr '\n' ' ' | sed 's/ *$//'
+  printf '%s\n' "$1" | sed -n 's/^ *coverage_\([a-z]*\): .*behind=1.*/\1/p' | tr '\n' ' ' | sed 's/ *$//'
+}
+
+coverage_behind_fingerprint() {
+  # *Which* gap, not just which scope: `scope@newest_closed`, so a new bar
+  # landing behind on a scope that was already behind restarts the clock.
+  printf '%s\n' "$1" \
+    | sed -n 's/^ *coverage_\([a-z]*\):.*newest_closed=\([^ ]*\).*behind=1.*/\1@\2/p' \
+    | tr '\n' ' ' | sed 's/ *$//'
 }
 
 today="$(date +%F)"
@@ -100,9 +115,30 @@ if [ "$COVERAGE_ONLY" = "1" ]; then
     [ "$CHECK_ONLY" = "1" ] && echo "catch-up: skip (inside the $PRE_SLOT_HHMM-$SLOT_HHMM bar-close window — the scheduled slot owns it)"
     exit 0
   fi
-  behind="$(coverage_behind_scopes)"
+  if [ -n "$HEALTH_SNAPSHOT" ]; then
+    health_out="$(cat "$HEALTH_SNAPSHOT" 2>/dev/null)"
+  else
+    health_out="$("$MONEY" health --run-id "$RUN_ID" --run-config "$RUN_CONFIG" 2>&1)"
+  fi
+  behind="$(coverage_behind_scopes "$health_out")"
   if [ -z "$behind" ]; then
+    rm -f "$COVERAGE_CONFIRM_STAMP" 2>/dev/null
     [ "$CHECK_ONLY" = "1" ] && echo "catch-up: skip (coverage ok — the ledger evaluated the newest closed bar)"
+    exit 0
+  fi
+  # One tick of confirmation before acting (see the header): acting on the first
+  # sighting of a gap races the slot's own run, because a bar that has just
+  # closed is behind=1 by construction until that run records its scan.
+  behind_fp="$(coverage_behind_fingerprint "$health_out")"
+  if [ -f "$COVERAGE_CONFIRM_STAMP" ] && [ "$(cat "$COVERAGE_CONFIRM_STAMP" 2>/dev/null)" = "$behind_fp" ]; then
+    seen_for=$(( $(date +%s) - $(date -r "$COVERAGE_CONFIRM_STAMP" +%s 2>/dev/null || echo 0) ))
+    if [ "$seen_for" -lt "$SALVAGE_CONFIRM_S" ]; then
+      [ "$CHECK_ONLY" = "1" ] && echo "catch-up: skip (gap '$behind_fp' only ${seen_for}s old, confirming at ${SALVAGE_CONFIRM_S}s on a later tick)"
+      exit 0
+    fi
+  else
+    printf '%s' "$behind_fp" > "$COVERAGE_CONFIRM_STAMP" 2>/dev/null
+    [ "$CHECK_ONLY" = "1" ] && echo "catch-up: skip (first sighting of gap '$behind_fp' — recorded, one tick of confirmation)"
     exit 0
   fi
   if [ -f "$SALVAGE_STAMP" ]; then

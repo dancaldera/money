@@ -180,13 +180,24 @@ place (run `daily_paper_run.sh`, which is idempotent per bar):
   `results/.last_salvage_attempt` (`SALVAGE_COOLDOWN_S`, default 1800s; stamped on
   every attempt, success or failure).
 
+  It also needs the gap **confirmed on a later tick** (`results/.last_coverage_behind`,
+  keyed `scope@newest_closed`, `SALVAGE_CONFIRM_S` default 3000s): a bar that has
+  just closed is `behind=1` by construction, and the window check cannot see a
+  *late* slot. Measured 2026-09-30: the 18:35 slot started 9m late, so the
+  watchdog's 18:45 tick read `behind=1` while that slot's own context was still
+  running and started a full duplicate desk run (watchdog 18:44:58 → 21:32:23 —
+  two contexts, two scans of the same bar: idempotent, but pure waste and a
+  second writer). One tick of delay still leaves ~23h of margin, and a gap the
+  slot clears deletes the marker.
+
 Why it exists: on 2026-09-29 the 18:35 run died on a full DNS outage (Alpaca *and*
 the CBOE VIX unresolvable), the 22:45 catch-up salvaged the bar, and nothing
 covered the case where that second run fails too. A report-only watchdog plus one
 evening slot leaves a ~24h hole — after the next bar closes, the skipped bar can
 never be scanned again (a fresh cross is required to re-enter), so the entry is
 lost for good. Preview either mode with `CHECK_ONLY=1` (plus `HEALTH_SNAPSHOT=`,
-`PAPERSCAN_HEARTBEAT=`, `PRE_SLOT_HHMM=`, `SALVAGE_STAMP=` to inject state).
+`PAPERSCAN_HEARTBEAT=`, `PRE_SLOT_HHMM=`, `SALVAGE_STAMP=`,
+`COVERAGE_CONFIRM_STAMP=` to inject state).
 
 The live bar window (`_run2_bars`, `recent=True`) starts 400 days before the 1st
 of the current month, so every run inside a month shares one cache key. The

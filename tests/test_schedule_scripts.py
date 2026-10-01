@@ -257,19 +257,35 @@ def _health_line(scope: str, behind: bool) -> str:
     ).health_line()
 
 
+# The confirmation fingerprint the guard derives from ``_health_line``'s sample:
+# scope@newest_closed, i.e. *which* gap, not just which scope is behind.
+GAP_FINGERPRINT = "crypto@2026-09-29T00:00:00"
+
+
 def _run_salvage(
     tmp_path,
     *,
     behind: bool,
     stamp: Path | None = None,
+    confirm: bool = False,
     pre_slot: str = "",
     slot: str | None = None,
 ) -> str:
-    """Run the catch-up guard in coverage mode, with the ledger state injected."""
+    """Run the catch-up guard in coverage mode, with the ledger state injected.
+
+    ``confirm`` pre-seeds the confirmation marker with the fingerprint of the
+    injected gap, aged past ``SALVAGE_CONFIRM_S``: that is what a *later*
+    watchdog tick looks like (the first sighting only records the gap).
+    """
     snapshot = tmp_path / f"health_{behind}.txt"
     snapshot.write_text(
         _health_line("crypto", behind) + "\n" + _health_line("equity", False) + "\n"
     )
+    confirm_stamp = tmp_path / "coverage_confirm"
+    if confirm:
+        confirm_stamp.write_text(GAP_FINGERPRINT)
+        long_ago = time.time() - 2 * 3600
+        os.utime(confirm_stamp, (long_ago, long_ago))
     env = dict(
         os.environ,
         CHECK_ONLY="1",
@@ -277,6 +293,7 @@ def _run_salvage(
         HEALTH_SNAPSHOT=str(snapshot),
         PAPERSCAN_HEARTBEAT=str(tmp_path / "hb_missing"),
         SALVAGE_STAMP=str(stamp or tmp_path / "salvage_stamp"),
+        COVERAGE_CONFIRM_STAMP=str(confirm_stamp),
         PRE_SLOT_HHMM=pre_slot,
     )
     if slot is not None:
@@ -297,13 +314,21 @@ def test_coverage_salvage_acts_on_the_ledger_not_the_clock(tmp_path):
     watchdog now calls this guard in coverage mode: the heartbeat is irrelevant
     here (it is missing in both cases below), the ledger's coverage line decides.
     """
-    out = _run_salvage(tmp_path, behind=True)
+    # First sighting: recorded, not acted on — a bar that has just closed is
+    # behind=1 while the slot is still running (2026-09-30's duplicate run).
+    first = _run_salvage(tmp_path, behind=True)
+    assert "first sighting" in first and "WOULD RUN" not in first
+    assert (tmp_path / "coverage_confirm").read_text() == GAP_FINGERPRINT
+    # A later tick with the same gap (the slot died, or never scanned) acts.
+    out = _run_salvage(tmp_path, behind=True, confirm=True)
     assert "WOULD RUN" in out and "coverage behind on crypto" in out
     assert "skip" not in out
     # Coverage current: one read-only health call and nothing else (the hourly
-    # job must stay silent, its stdout is delivered verbatim).
+    # job must stay silent, its stdout is delivered verbatim) — and the marker is
+    # dropped so a fresh gap starts its own confirmation clock.
     quiet = _run_salvage(tmp_path, behind=False)
     assert "skip (coverage ok" in quiet and "WOULD RUN" not in quiet
+    assert not (tmp_path / "coverage_confirm").exists()
 
 
 def test_coverage_salvage_cannot_race_the_daily_slot(tmp_path):
@@ -316,11 +341,11 @@ def test_coverage_salvage_cannot_race_the_daily_slot(tmp_path):
     if start.strftime("%H:%M") > end.strftime("%H:%M"):
         pytest.skip("window wraps past midnight")
     out = _run_salvage(
-        tmp_path, behind=True, pre_slot=start.strftime("%H:%M"), slot=end.strftime("%H:%M")
+        tmp_path, behind=True, confirm=True, pre_slot=start.strftime("%H:%M"), slot=end.strftime("%H:%M")
     )
     assert "bar-close window" in out and "WOULD RUN" not in out
     # ...and outside it the same state still acts.
-    assert "WOULD RUN" in _run_salvage(tmp_path, behind=True)
+    assert "WOULD RUN" in _run_salvage(tmp_path, behind=True, confirm=True)
 
 
 def test_coverage_salvage_bounds_retries_with_a_cooldown_stamp(tmp_path):
@@ -330,7 +355,7 @@ def test_coverage_salvage_bounds_retries_with_a_cooldown_stamp(tmp_path):
     """
     stamp = tmp_path / "salvage_stamp"
     stamp.write_text("")
-    out = _run_salvage(tmp_path, behind=True, stamp=stamp)
+    out = _run_salvage(tmp_path, behind=True, stamp=stamp, confirm=True)
     assert "cooldown" in out and "WOULD RUN" not in out
     text = CATCHUP.read_text()
     assert 'touch "$SALVAGE_STAMP"' in text
@@ -339,7 +364,27 @@ def test_coverage_salvage_bounds_retries_with_a_cooldown_stamp(tmp_path):
     # an attempt older than the cooldown is allowed through again
     two_days = time.time() - 2 * 86400
     os.utime(stamp, (two_days, two_days))
-    assert "WOULD RUN" in _run_salvage(tmp_path, behind=True, stamp=stamp)
+    assert "WOULD RUN" in _run_salvage(tmp_path, behind=True, stamp=stamp, confirm=True)
+
+
+def test_coverage_salvage_needs_a_second_tick_before_it_runs(tmp_path):
+    """A gap seen for the first time is only recorded (2026-09-30 regression).
+
+    The 18:35 slot started 9m late, so the watchdog's 18:45 tick read behind=1
+    while the slot's own context was still running and started a full duplicate
+    desk run (18:44:58 -> 21:32:23). The guard now needs the gap to survive
+    ``SALVAGE_CONFIRM_S`` and be seen again on a later tick; the slot's scan
+    clears the marker, so no second run happens.
+    """
+    out = _run_salvage(tmp_path, behind=True)
+    assert "first sighting" in out and "WOULD RUN" not in out
+    # same gap, marker fresh (the next tick is seconds later): still confirming
+    assert "confirming at" in _run_salvage(tmp_path, behind=True)
+    text = CATCHUP.read_text()
+    # the marker is keyed on scope@newest_closed, so a *new* bar restarts it
+    assert "newest_closed=" in text and "behind_fp" in text
+    # the race window alone could not catch a late slot, which is why this exists
+    assert "SALVAGE_CONFIRM_S" in text
 
 
 def test_hourly_watchdog_wires_the_salvage_in_coverage_mode():
