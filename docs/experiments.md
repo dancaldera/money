@@ -413,3 +413,83 @@ case for **pricing crypto breadth honestly before widening it**, and for testing
 per-asset notional *tilt* (cheaper leg larger at the same gross) rather than a
 uniform size step — a mechanism the manifests do not have yet, so it needs code
 plus a reviewed experiment before it can be measured.
+
+## Measured: universe breadth (more symbols, same slots) — says no harder than pruning
+
+Why this was asked: the live run3 census (`scripts/analysis_live_deployment.py`,
+2026-10-01) shows the guards blocking **nothing** — 8 buy signals → 8 intents → 0
+blocked — with only 7 of 17 slots used and 43% of the $10,625 gross cap spent.
+The tempting reading is "the desk is starved of signals, so add symbols". The
+frozen resource is not the symbol list, though: it is the slot budget (17 slots,
+$10,625 gross, $5,000 crypto, $5,625 stock), so every symbol added spends
+someone else's slot. That is testable, so it was tested.
+
+All five rows are the run3 basis (17 slots x $625, `+` the opt-in halt recovery,
+the `exp-slots-all-recover` values) on 2022-01-01 → 2026-09-30, replayed
+read-only; **no row halted**, so drawdowns are all under the 5% latch:
+
+```bash
+.venv/bin/money portfolio-backtest --run-config config/experiments/exp-universe-wide.yaml
+```
+
+| manifest | watchlist | return | maxDD | closing trades | expectancy | Sharpe | DSR |
+|---|---|---|---|---|---|---|---|
+| `exp-slots-all-recover` (control) | 8 crypto / 9 stock | **+10.62%** | -2.79% | 366 | $25.75 | 0.80 | 0.925 |
+| `exp-universe-wide-stocks` | 8 / 15 | +9.46% | -2.60% | 414 | $20.44 | 0.73 | 0.897 |
+| `exp-universe-wide-crypto-10slots` | 10 / 15, crypto booked 10 slots | +8.17% | -2.93% | 471 | $13.81 | 0.61 | 0.787 |
+| `exp-universe-wide-crypto` | 10 / 9 | +6.74% | -3.16% | 412 | $11.82 | 0.70 | 0.752 |
+| `exp-universe-wide` | 10 / 15 | +5.15% | -2.93% | 460 | $7.58 | 0.57 | 0.648 |
+
+Added names: crypto `BCH/USD`, `UNI/USD`; stocks `JPM`, `XOM`, `WMT`, `COST`,
+`UNH`, `V`. (Same idea with `XRP/USD`, `DOT/USD`, `SHIB/USD`, `ADA/USD` was
+dropped: their Alpaca daily history starts in 2024 / 2023-08 / 2023-03 / 2026-02,
+so they cannot price this window.) Expectancy falls **monotonically** with
+breadth and nothing beats the incumbent 17.
+
+Realized P&L split by leg (`scripts/analysis_symbol_edge.py` plus the raw
+`trades.csv`), closing trades only:
+
+| variant | incumbent crypto | incumbent stock | added symbols | total |
+|---|---|---|---|---|
+| control | 205 tr / $4,890 ($23.85 ea) | 161 tr / $4,534 ($28.16 ea) | — | $9,424 |
+| wide-stocks | 204 tr / $4,316 ($21.16) | 118 tr / $3,692 ($31.29) | +$455 | $8,463 |
+| wide-crypto | 197 tr / $908 ($4.61) | 162 tr / $4,513 ($27.86) | -$553 | $4,869 |
+| wide | 197 tr / $908 ($4.61) | 120 tr / $3,292 ($27.43) | -$716 | $3,485 |
+| wide-crypto-10slots | 200 tr / $4,599 ($22.99) | 119 tr / $2,537 ($21.32) | -$627 | $6,503 |
+
+Two facts fall out of the `blocked_by` column of each `decisions.csv`:
+
+- The blocks land on the **incumbents**, not on the newcomers: adding 6 stocks
+  takes `max_stock_exposure` blocks on the original 9 from **11 → 54**; adding 2
+  cryptos takes correlation blocks on the original 8 from **41 → 44** and crypto
+  exposure blocks from **13 → 17**.
+- The damage is path displacement, not "bad symbols": the control's single best
+  name, `SOL/USD` (+$3,775 with 23 trades, 26% of notional per trade), keeps its
+  20-30 trades but earns **+$13** once two correlated cryptos compete for the
+  crypto slots. Give the newcomers their own slots (`max_crypto_positions`
+  8 → 10, `$6,250` — the `-10slots` probe) and `SOL/USD` returns to **+$3,881**
+  and the incumbent crypto leg to **$4,599**, i.e. back to the control's level —
+  paid for by the stock leg ($4,534 → $2,537), because the portfolio cap is 17
+  slots either way. Same budget, different winners.
+- The added cryptos lose in *every* variant (`BCH/USD` -$291..-$315, `UNI/USD`
+  -$238..-$708 across 24-30 trades), which is the fee-bill section above applied:
+  25bps a side on a $625 notional, ~86% of the desk's fee bill, against a leg
+  whose gross edge per trade is the smaller one.
+
+**Reading (and the caveat):** this is the third independent replication of
+"dollars = trade quality x deployment, never trade count" (after the symbol
+leaderboard and the sizing ladder) — now from the other side of the same
+question: you cannot buy dollars by adding symbols either. Treat it as *breadth
+is not free*, not as a precise -5.5pp estimate: it is one window, one path, and
+the control's own per-trade CI90 is [$3.36, $52.88], so single-symbol path
+effects (SOL) dominate any point estimate. What the window does establish is
+where the dollars come from (a fixed slot budget spent on the best-trending
+incumbents) and that the burden of proof is on widening the watchlist. The live
+run3 keeps its archived 17-name list — which the strict loader pins anyway.
+
+One more measured asymmetry worth keeping: on the run3 basis the crypto book is
+limited by the **correlation guard** (44 of the 64 blocks on incumbent crypto
+names are `correlation_cap:N`, only 13-17 are `max_crypto_exposure`), not by its
+slot count. Loosening it would admit more *correlated* crypto crosses into the
+most expensive leg, so it is a knob that needs its own measured manifest (and a
+fee-aware objective) before anyone touches it — not a free way to fill slots.
