@@ -127,6 +127,8 @@ Research/attribution scripts over the cached bars and the gitignored artifacts
     --artifact results/exp-slots-all-2x-recover/portfolio-backtest \
     --run-config config/experiments/exp-slots-all-2x-recover.yaml
 .venv/bin/python scripts/analysis_live_deployment.py   # live run: deployment + attribution
+.venv/bin/python scripts/analysis_experiment_table.py \   # one table for a sweep of replays
+    exp-slots-all-recover exp-sma-3-15 exp-sma-5-20 exp-sma-8-24
 ```
 
 The second one answers "should we cut the losing symbols?" with a walk-forward
@@ -147,6 +149,11 @@ filled / pending / expired). It is read-only and needs no broker or network call
 if the live book is at 4% of equity, that ratio is what a size step has to move,
 and the scan census is the live evidence for whether a cap or the entry rule is
 holding it back.
+
+The sweep table (`analysis_experiment_table.py`, the fifth command above) answers
+"which of these replays actually won" without hand-copying five `summary.json`
+files — and refuses to imply a comparison it cannot support, since rows replayed
+on different cache dates are not measured on the same bars.
 
 `DRY_RUN=1` never advances `.last_success_paperscan` — it writes
 `.last_preview_paperscan` instead. The 22:00 catch-up guard decides on the success

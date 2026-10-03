@@ -493,3 +493,69 @@ names are `correlation_cap:N`, only 13-17 are `max_crypto_exposure`), not by its
 slot count. Loosening it would admit more *correlated* crypto crosses into the
 most expensive leg, so it is a knob that needs its own measured manifest (and a
 fee-aware objective) before anyone touches it — not a free way to fill slots.
+
+## Measured: the SMA windows — 10/30 is the keep (one clock, 2022-01-01 → 2026-10-02)
+
+The live census (`scripts/analysis_live_deployment.py`) says the desk is
+**signal-starved, not cap-starved**: 8 buy signals → 8 intents, 0 blocked by any
+guard, $4,736 gross = 44.6% of the $10,625 cap and 7 of 17 slots used. The
+tempting reading of that is "the cross is too slow; speed it up and let the free
+slots work". So the signal parameters were swept on the run3 basis (17 x $625,
+gross $10,625, 8% stop, 5% halt + the shipped recovery rule) with everything
+except `fast_window` / `slow_window` held identical, all six rows replayed on the
+**same** cache so the table is a comparison and not a history:
+
+| manifest | fast/slow | return | maxDD | ret/DD | trades | win% | expectancy | total | Sharpe | PF | DSR |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| `exp-slots-all-recover` (= run3 values, 10/30) | 10/30 | **+10.80%** | -2.79% | **3.87** | 366 | 30.1% | **$25.75** | **$9,424** | **0.809** | **1.86** | **0.931** |
+| `exp-sma-5-20` | 5/20 | +9.23% | -2.93% | 3.15 | 585 | 29.9% | $13.82 | $8,082 | 0.625 | 1.54 | 0.832 |
+| `exp-sma-8-24` | 8/24 | +8.94% | -3.18% | 2.81 | 457 | 30.0% | $17.79 | $8,131 | 0.672 | 1.63 | 0.850 |
+| `exp-sma-3-15` | 3/15 | +7.49% | -3.21% | 2.33 | **847** | **32.9%** | $7.64 | $6,471 | 0.706 | 1.34 | 0.753 |
+| `exp-sma-15-45` | 15/45 | +5.37% | -2.38% | 2.26 | 240 | 30.0% | $16.97 | $4,072 | 0.643 | 1.53 | 0.705 |
+| `exp-sma-20-60` | 20/60 | +4.82% | **-1.94%** | 2.49 | 193 | 31.6% | $20.29 | $3,916 | 0.628 | 1.61 | 0.695 |
+
+**Reading.** The live 10/30 wins on every axis (return, return per unit of
+drawdown, Sharpe, profit factor, DSR) and is an **interior optimum**: both a
+faster and a slower cross are worse, so this is not one end of a slope the desk
+could slide along.
+
+- A faster cross does supply the trades — 3/15 takes **2.3x** the control's count
+  (847 vs 366) — and still gives up **$2,953** of P&L. Win% is highest at the
+  fastest pair (32.9%) while expectancy is a quarter of the control's ($7.64 vs
+  $25.75): the added crosses are not "more of the same trade", they are
+  fee-and-whipsaw-neutral at best. Crypto pays 25bps a side (86% of the desk's
+  fee bill), so at 585 trades the 5/20 book pays ~60% more in fees to earn 15%
+  fewer dollars.
+- Faster is also **expensive in halt headroom**, not just in return: maxDD
+  deepens (-2.79% → -3.21%) on a 5% latch that already costs 20 sessions flat
+  when it trips.
+- The slower pairs cut trades 34-47% and lose **50-56%** of the dollars. They do
+  hold the best per-trade expectancy of the non-control rows ($16.97 / $20.29) —
+  fewer, better trades — but 60-105 fewer trades at +$1-5k of expectancy-per-trade
+  is the leaderboard lesson on the time axis: dollars are trade quality **x**
+  deployment, never one of the two.
+- This is the mirror of the breadth result above: there, adding symbols kept the
+  trade count and lost dollars; here, adding trades (a faster cross) loses
+  dollars outright. The fixed resource is not the slot budget alone — it is the
+  handful of genuine trend crossings the universe produces and the cost of each.
+- It matches the (non-primary) literature: a 1:3-1:4 fast:slow ratio is the
+  balanced zone, faster pairs buy earlier signal with more false starts, and
+  range-bound tape makes every extra cross pay fees
+  (quantt.co.uk/resources/moving-average-crossover-guide,
+  luxalgo.com/library/concept/moving-average-crossovers).
+
+**Caveat + reproduce.** One window, one path: the control's own per-trade CI90 is
+[$3.36, $52.88] and DSR spans 0.695-0.931, so read the *ordering*, not the pp.
+What it establishes is that "10/30 is starved, speed it up" is wrong on the run3
+basis, and the burden of proof sits on any window change (which would need a new
+live run_id anyway — the strict loader pins run3's strategy values).
+
+```bash
+.venv/bin/python scripts/analysis_experiment_table.py \
+    exp-slots-all-recover exp-sma-3-15 exp-sma-5-20 exp-sma-8-24 exp-sma-15-45 exp-sma-20-60
+```
+
+The script (new) prints the table, labels each row with the replayed clock, and
+warns when the rows disagree — a sweep replayed across a cache refresh is flagged
+rather than silently compared, which is how the two ladders earlier in this file
+came to be dated in their headings.
