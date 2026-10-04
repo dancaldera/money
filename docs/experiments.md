@@ -603,6 +603,19 @@ the trade count while holding expectancy fixed. A gate this blunt was the only
 one priced — a *smarter* filter (regime/news-conditioned) is a different question
 and would need the same treatment.
 
+**Prior art.** A minimum-separation gate is the canonical whipsaw filter, so the
+mechanism is not in question — only the payoff
+(luxalgo.com/library/concept/moving-average-crossovers: whipsaw filters are
+"a minimum abs(Spread), a hold of several bars, or agreement with a longer MA").
+The published payoffs read the same way as this table: a 1-2% band around the
+cross suppresses false signals but adds lag, and an ADX/confirmation filter that
+lifted win rate 48.6% -> 57.1% still *reduced annual return* by 0.8% "due to
+missed opportunities" (quantengines.com/blog/moving-average-crossover-strategy);
+an RSI filter cut whipsaws 30% "with minimal impact on returns"
+(backtesteverything.com/blog/moving-average-crossover-backtest). Fewer, cleaner
+signals is a risk trade, not a dollars trade — the same shape this desk measures
+everywhere else.
+
 ```bash
 .venv/bin/python scripts/analysis_experiment_table.py \
     exp-slots-all-recover exp-sma-sep-05 exp-sma-sep-10
