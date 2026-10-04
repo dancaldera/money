@@ -240,7 +240,10 @@ class Run2Service:
                 results.append({"symbol": symbol, "portfolio": "all", "action": "none", "reason": "missing_bars"})
                 continue
             signal = sma_cross_signal(
-                frame["Close"], self.cfg.strategy.fast_window, self.cfg.strategy.slow_window
+                frame["Close"],
+                self.cfg.strategy.fast_window,
+                self.cfg.strategy.slow_window,
+                self.cfg.strategy.entry_min_separation_pct,
             )
             price = float(frame["Close"].iloc[-1])
             bar_end = _bar_end(frame)

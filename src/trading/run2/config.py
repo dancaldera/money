@@ -39,6 +39,7 @@ _FROZEN_BASELINES: dict[str, dict[str, float | int | None]] = {
         "stop_loss_pct": 8,
         "stop_breakeven_at_pct": None,
         "stop_trail_pct": None,
+        "entry_min_separation_pct": None,
         "position_notional": 625,
         "max_positions": 8,
         "max_gross_exposure": 5_000,
@@ -66,6 +67,7 @@ _FROZEN_BASELINES: dict[str, dict[str, float | int | None]] = {
         "stop_loss_pct": 8,
         "stop_breakeven_at_pct": None,
         "stop_trail_pct": None,
+        "entry_min_separation_pct": None,
         "position_notional": 625,
         "max_positions": 17,
         "max_gross_exposure": 10_625,
@@ -97,6 +99,11 @@ class StrategyConfig:
     # measured through portfolio-backtest until a human opens a run that carries it.
     stop_breakeven_at_pct: float | None = None
     stop_trail_pct: float | None = None
+    # Experiment-only whipsaw filter on entries: a fresh up-cross only fires
+    # when the SMAs are already this far apart (% of price). Also pinned to None
+    # on every live run — measured 2026-10-04 on the run3 basis, it loses dollars
+    # (see docs/experiments.md), so it may only be replayed.
+    entry_min_separation_pct: float | None = None
 
 
 @dataclass(frozen=True)
@@ -263,7 +270,7 @@ def _validate(cfg: RunConfig, *, strict: bool = True) -> None:
     recovery_days = cfg.portfolio.halt_recovery_days
     if recovery_days is not None and recovery_days <= 0:
         raise RunConfigError("halt_recovery_days must be positive")
-    for name in ("stop_breakeven_at_pct", "stop_trail_pct"):
+    for name in ("stop_breakeven_at_pct", "stop_trail_pct", "entry_min_separation_pct"):
         value = getattr(cfg.strategy, name)
         if value is not None and value <= 0:
             raise RunConfigError(f"{name} must be positive when set")
@@ -317,6 +324,10 @@ def _validate(cfg: RunConfig, *, strict: bool = True) -> None:
             baseline["stop_breakeven_at_pct"],
         ),
         "stop_trail_pct": (cfg.strategy.stop_trail_pct, baseline["stop_trail_pct"]),
+        "entry_min_separation_pct": (
+            cfg.strategy.entry_min_separation_pct,
+            baseline["entry_min_separation_pct"],
+        ),
         "position_notional": (cfg.portfolio.position_notional, baseline["position_notional"]),
         "max_positions": (cfg.portfolio.max_positions, baseline["max_positions"]),
         "max_gross_exposure": (cfg.portfolio.max_gross_exposure, baseline["max_gross_exposure"]),

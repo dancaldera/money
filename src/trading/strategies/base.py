@@ -15,11 +15,17 @@ def sma(values, period: int) -> np.ndarray:
     return pd.Series(values).rolling(period).mean().to_numpy()
 
 
-def sma_cross_signal(values, fast: int = 10, slow: int = 30) -> str:
+def sma_cross_signal(values, fast: int = 10, slow: int = 30, entry_min_separation_pct: float | None = None) -> str:
     """Return BUY/SELL only on a fresh SMA cross, otherwise HOLD.
 
     This pure function is the single source of truth for both the backtest
     strategy and the scheduled paper decision engine.
+
+    ``entry_min_separation_pct`` (experiment-only, ``None`` = the frozen live
+    rule) is a whipsaw filter on **entries only**: a fresh up-cross fires only
+    when the two SMAs are already at least X% of price apart in the direction of
+    the cross. A weak cross returns HOLD instead of BUY. Exits are deliberately
+    left alone — a filter must never delay a risk-reducing signal.
     """
     close = pd.Series(values, dtype="float64")
     if len(close) < slow + 2:
@@ -28,6 +34,10 @@ def sma_cross_signal(values, fast: int = 10, slow: int = 30) -> str:
     slow_sma = close.rolling(slow).mean()
     up = fast_sma.iloc[-2] <= slow_sma.iloc[-2] and fast_sma.iloc[-1] > slow_sma.iloc[-1]
     down = fast_sma.iloc[-2] >= slow_sma.iloc[-2] and fast_sma.iloc[-1] < slow_sma.iloc[-1]
+    if up and entry_min_separation_pct is not None:
+        separation_pct = (fast_sma.iloc[-1] - slow_sma.iloc[-1]) / close.iloc[-1] * 100
+        if separation_pct < entry_min_separation_pct:
+            return "HOLD"
     return "BUY" if up else "SELL" if down else "HOLD"
 
 

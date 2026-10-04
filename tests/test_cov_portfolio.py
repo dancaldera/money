@@ -156,6 +156,24 @@ def test_simulator_breakeven_stop_protects_a_winner():
     assert "stop" not in set(control.trades.get("reason") or [])
 
 
+# --- entry separation filter (experiment-only whipsaw gate) --------------------- #
+def test_simulator_entry_separation_filter_blocks_a_weak_cross():
+    """Only the entry is gated: a weak cross fills the control, not the filter."""
+    base = run2_config()
+    frame = ohlcv([10.0] * 30 + [9.0, 20.0] + [20.0] * 12)
+    assert (simulate_portfolio(base, {"AAPL": frame}).trades["side"] == "buy").sum() == 1
+    loose = simulate_portfolio(
+        replace(base, strategy=replace(base.strategy, entry_min_separation_pct=0.5)),
+        {"AAPL": frame},
+    )
+    assert (loose.trades["side"] == "buy").sum() == 1  # 3% separation still passes
+    strict = simulate_portfolio(
+        replace(base, strategy=replace(base.strategy, entry_min_separation_pct=25.0)),
+        {"AAPL": frame},
+    )
+    assert strict.trades.get("side") is None or (strict.trades["side"] == "buy").sum() == 0
+
+
 # --- blocked_by attribution ------------------------------------------------------ #
 def _paired_frames(asset="stock"):
     """Two symbols of one asset class that cross up on the same bar."""

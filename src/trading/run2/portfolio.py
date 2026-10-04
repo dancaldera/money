@@ -263,7 +263,12 @@ def simulate_portfolio(
             if frame is None or day not in frame.index:
                 continue
             history = frame.loc[:day]
-            signal = sma_cross_signal(history["Close"], cfg.strategy.fast_window, cfg.strategy.slow_window)
+            signal = sma_cross_signal(
+                history["Close"],
+                cfg.strategy.fast_window,
+                cfg.strategy.slow_window,
+                cfg.strategy.entry_min_separation_pct,
+            )
             price = float(history["Close"].iloc[-1])
             last_prices[symbol] = price
             action = "none"

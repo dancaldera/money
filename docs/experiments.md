@@ -559,3 +559,51 @@ The script (new) prints the table, labels each row with the replayed clock, and
 warns when the rows disagree — a sweep replayed across a cache refresh is flagged
 rather than silently compared, which is how the two ladders earlier in this file
 came to be dated in their headings.
+
+## Measured: the whipsaw filter — the marginal crosses are average, not bad (same clock, 2022-01-01 → 2026-10-03)
+
+The sweep above left exactly one signal-side idea untested. Its faster rows lose
+dollars on *extra* crossings, which reads as "the marginal crosses are noise, so
+gate them out": only take a fresh up-cross once the two SMAs are already
+meaningfully apart. `entry_min_separation_pct` (new, experiment-only, pinned
+absent on every live run exactly like the stop refinements) implements that gate —
+a fresh up-cross returns HOLD unless `|SMA10 − SMA30| / close ≥ X%` at the cross
+bar, with exits deliberately left ungated so a filter can never delay a
+risk-reducing signal. Both rows replayed on the **same** cache as the control:
+
+| manifest | gate | return | maxDD | ret/DD | trades | win% | expectancy | total | Sharpe | PF | DSR | clock |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `exp-slots-all-recover` (control) | none | **+10.84%** | -2.79% | **3.89** | **366** | 30.1% | $25.75 | **$9,424** | **0.812** | **1.86** | **0.932** | 2022-01-01..2026-10-03 |
+| `exp-sma-sep-05` | ≥ 0.5% | +3.96% | -1.95% | 2.03 | 148 | 27.0% | **$25.18** | $3,726 | 0.378 | 1.75 | 0.615 | 2022-01-01..2026-10-03 |
+| `exp-sma-sep-10` | ≥ 1.0% | +3.24% | **-1.09%** | 2.96 | 46 | 21.7% | $70.40 | $3,238 | 0.331 | 2.89 | 0.580 | 2022-01-01..2026-10-03 |
+
+**Reading — the hypothesis is wrong, and the 0.5% row says exactly why.**
+
+- The 0.5% gate drops **218 of 366 trades** and **$5,698 of the $9,424** while
+  leaving per-trade expectancy *unchanged* ($25.18 vs $25.75). That identity is
+  the finding: the filtered crosses earned the desk's average dollar, neither
+  more nor less. Filtering them is a lever on trade count and nothing else.
+- Its drawdown does improve (-2.79% → -1.95%), but a 5% halt that the control
+  never trips means that headroom buys nothing: ret/DD falls 3.89 → 2.03 by
+  trading away dollars for risk the desk was not using.
+- The 1.0% gate is the strongest version of the idea and still loses: expectancy
+  triples to $70.40 a trade on 46 trades, and 46 x $70 is **34%** of the control's
+  dollars. Win% collapses to 21.7% — a handful of big trends carrying many small
+  losers. This is the leaderboard lesson on the signal axis: dollars are trade
+  quality **x** deployment, never one of the two.
+- Together with the sweep and the breadth result, the three now agree: the scarce
+  resource is neither slots, nor symbols, nor the number of genuine crossings —
+  it is *deployment of the crossings you already have*. Every filter, pruning and
+  window change measured so far reduces dollars, which is why the only measured
+  dollar lever left is the 2x size step (a human decision).
+
+**Caveat + reproduce.** The 46-trade row is not conclusive alone (CI90
+[-$22.68, $227.09], DSR 0.58); the 0.5% row is the decisive one because it moves
+the trade count while holding expectancy fixed. A gate this blunt was the only
+one priced — a *smarter* filter (regime/news-conditioned) is a different question
+and would need the same treatment.
+
+```bash
+.venv/bin/python scripts/analysis_experiment_table.py \
+    exp-slots-all-recover exp-sma-sep-05 exp-sma-sep-10
+```

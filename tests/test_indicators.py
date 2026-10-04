@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from trading.strategies.base import rsi, sma
+from trading.strategies.base import rsi, sma, sma_cross_signal
 
 
 def _wilder_rsi_reference(closes: np.ndarray, period: int = 14) -> float:
@@ -63,3 +63,30 @@ def test_sma_basic():
     out = sma(np.array([1.0, 2, 3, 4, 5]), 3)
     assert np.isnan(out[:2]).all()
     assert out[2] == 2.0 and out[4] == 4.0
+
+
+# --- entry separation filter (experiment-only whipsaw gate) --------------------- #
+def _fresh_cross_series(final_price: float) -> pd.Series:
+    """31 flat bars then one jump: a fresh cross on the final (32nd) bar."""
+    return pd.Series([100.0] * 31 + [final_price])
+
+
+def test_entry_separation_filter_gates_a_weak_up_cross():
+    closes = _fresh_cross_series(110.0)
+    fast = closes.rolling(10).mean().iloc[-1]
+    slow = closes.rolling(30).mean().iloc[-1]
+    separation = (fast - slow) / closes.iloc[-1] * 100
+    assert separation > 0  # the final bar is a fresh up-cross
+    assert sma_cross_signal(closes) == "BUY"
+    assert sma_cross_signal(closes, entry_min_separation_pct=separation * 0.5) == "BUY"
+    assert sma_cross_signal(closes, entry_min_separation_pct=separation * 2) == "HOLD"
+
+
+def test_entry_separation_filter_never_delays_an_exit():
+    """Exits keep the frozen rule: only entries are gated."""
+    assert sma_cross_signal(_fresh_cross_series(90.0), entry_min_separation_pct=50.0) == "SELL"
+
+
+def test_entry_separation_filter_leaves_hold_alone():
+    flat = pd.Series([100.0] * 40)
+    assert sma_cross_signal(flat, entry_min_separation_pct=1.0) == "HOLD"
