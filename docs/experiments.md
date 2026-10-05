@@ -620,3 +620,71 @@ everywhere else.
 .venv/bin/python scripts/analysis_experiment_table.py \
     exp-slots-all-recover exp-sma-sep-05 exp-sma-sep-10
 ```
+
+## Measured: the resting-limit (maker) entry — no free lunch in the entry style (same clock, 2022-01-01 → 2026-10-03)
+
+The desk buys at the next bar's open and pays the **taker** crypto fee (25 bps
+per side, Alpaca fee schedule tier 1). Alpaca charges **15 bps to a maker** — a
+resting limit that does not cross the spread — so a buy limit parked below the
+signal close would pay 10 bps less on the way in *and* buy at a better price.
+That is the last untested lever on the cost side, and it was open because it
+needs an execution change, not a config knob.
+
+`scripts/analysis_limit_entry.py` prices it on the control replay
+(`exp-slots-all-recover`, 366 round trips: 205 crypto + 161 stock, $625/entry):
+for every entry the control took, it rests a limit at `signal_close * (1 - offset)`
+and asks whether that bar's low would have filled it (fill at the limit, or at
+the open when the open is already better), re-deriving the notional-fixed P&L
+with the maker fee on the entry and the taker fee/slippage on the exit. The
+trades the limit never fills are charged at the control's realized P&L — an
+unfilled intent expires, and the frozen strategy needs a *fresh* cross to
+re-enter, so the move is gone.
+
+| leg | offset | fill | mean improvement | improvement $ | missed trades $ | net $ | control $ |
+|---|---|---|---|---|---|---|---|
+| all | 0.25% | 88.0% | 0.54% | +732 | −1,568 | **7,019** | 9,424 |
+| crypto | 0.10% | 97.1% | 0.11% | +260 | −219 | 4,711 | 4,890 |
+| crypto | 0.20% | 95.1% | 0.20% | +378 | −128 | 5,012 | 4,890 |
+| crypto | **0.25%** | 94.2% | 0.25% | +437 | −69 | **5,188** | 4,890 |
+| crypto | 0.35% | 92.2% | 0.35% | +549 | −576 | 4,288 | 4,890 |
+| stock | 0.10% | 84.5% | 0.86% | +276 | −1,664 | 1,481 | 4,534 |
+| stock | 0.25% | 80.1% | 0.96% | +295 | −1,499 | 1,831 | 4,534 |
+| stock | 1.00% | 55.3% | 1.65% | +405 | −2,064 | 810 | 4,534 |
+
+**The equity leg says no outright.** It loses $2.7k–3.7k of its realized P&L at
+*every* offset — 60–82% of the leg, worst at the widest limit — and the
+mechanism is visible in the table:
+the mean fill lands 0.86–1.65% under the signal close while the limit asked for
+0.10–0.25%, i.e. a resting equity limit only fills on gap-downs. It buys the dips
+that precede the losses and misses the entries that gap away, which are the ones
+carrying the P&L (32 missed trades at 0.25% held +$1,499, a third of the leg).
+
+**The crypto leg says maybe, and not enough.** It peaks at a 0.25% offset:
++$299 over 4.6y, +6.1% of that leg's realized P&L — and the sign flips inside
+10 bps (0.20% +$123, 0.35% −$602). That is ~$65/yr on $100k of equity at the
+current $625 notional, for an execution change that adds resting GTC orders,
+fill tracking and unfilled-intent handling (`qty` 94% of the time is not 100% of
+the time) — and the operational cost of a missed intent is exactly the loss the
+table already charges. A first-order screen cannot price partial fills, slot
+pressure, or a re-placed intent; all of them push it further down.
+
+**Verdict: don't adopt.** The crypto fee bill is real (25 bps in, 25 bps out —
+86% of the desk's costs) but the maker discount on the entry side is 10 bps
+($0.63/trade at $625) and it is worth less than the trades a resting limit
+fails to take. A 2x size step doubles that bill *and* doubles the missed-trade
+cost in dollars, so this screen does not get better with size. What is left on
+the cost side is the exit (stop-driven, cannot rest) — the entry style is
+closed, and with it the last untested lever: signals, windows, breadth,
+pruning, stops and now execution all measure as neutral-to-negative, so the only
+measured dollar lever remains **the 2x size step with the recovery rule it ships
+(a human decision)**.
+
+**Caveat + reproduce.** First-order by construction: the exit path (and the
+fill-derived 8% stop) is held at the control's, and a freed slot picked up by a
+later cross is not modelled. Read it as a screen, not a re-simulation.
+
+```bash
+.venv/bin/python scripts/analysis_limit_entry.py \
+    --artifact results/exp-slots-all-recover/portfolio-backtest --notional 625 \
+    --offsets 0.10,0.15,0.20,0.25,0.35
+```

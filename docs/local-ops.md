@@ -127,6 +127,8 @@ Research/attribution scripts over the cached bars and the gitignored artifacts
     --artifact results/exp-slots-all-2x-recover/portfolio-backtest \
     --run-config config/experiments/exp-slots-all-2x-recover.yaml
 .venv/bin/python scripts/analysis_live_deployment.py   # live run: deployment + attribution
+.venv/bin/python scripts/analysis_limit_entry.py \     # what a passive (maker) entry is worth
+    --artifact results/exp-slots-all-recover/portfolio-backtest --notional 625
 .venv/bin/python scripts/analysis_experiment_table.py \   # one table for a sweep of replays
     exp-slots-all-recover exp-sma-3-15 exp-sma-5-20 exp-sma-8-24
 ```
