@@ -688,3 +688,85 @@ later cross is not modelled. Read it as a screen, not a re-simulation.
     --artifact results/exp-slots-all-recover/portfolio-backtest --notional 625 \
     --offsets 0.10,0.15,0.20,0.25,0.35
 ```
+
+## Measured: the correlation guard — the last structural guard, and it is earning its keep (full re-simulation, 2022-01-01 → 2026-10-05)
+
+Every other lever is measured; the portfolio guards were not. The earlier census
+("`correlation_cap` 11 of 205 blocks — the obvious suspect costs 11 signals in
+4.7 years: leave it alone") was the **1x / 8-slot** basis. On the run3 basis the
+gross-exposure blocks fall away and the correlation cap becomes the desk's top
+suppressor: of 79 guard blocks over the window, **48 are `correlation_cap`**
+(41 crypto, 7 stock), against `max_crypto_exposure` 13, `max_gross_exposure` 7,
+`max_stock_exposure` 11. So this is the lever that mattered enough to price.
+
+Four read-only variants of the control `exp-slots-all-recover` (run3: 17 × $625,
+$10,625 gross, 8% stop, recovery rule), replayed on one cache — 2022-01-01 →
+2026-10-05 — and read with `analysis_experiment_table.py`:
+
+| manifest | knob | return | maxDD | ret/DD | trades | expectancy | DSR |
+|---|---|---|---|---|---|---|---|
+| `exp-slots-all-recover` (control) | 0.80 / 1 | +10.93% | -2.79% | **3.92** | 366 | +$25.75 | 0.935 |
+| `exp-corr-t90` | 0.90 / 1 | +11.44% | -3.47% | 3.29 | 401 | +$24.46 | 0.922 |
+| `exp-corr-t95` | 0.95 / 1 | +11.44% | -3.47% | 3.29 | 403 | +$24.35 | 0.921 |
+| `exp-corr-off` | 1.00 / 1 (inert) | +11.44% | -3.47% | 3.29 | 403 | +$24.35 | 0.921 |
+| `exp-corr-match2` | 0.80 / **2** | +11.55% | -3.12% | 3.70 | 382 | +$25.96 | **0.937** |
+
+Two facts decide it, and neither is visible in the path table alone.
+
+1. **Relaxing the cap does not buy signals, it re-routes them.** The threshold
+   sweep removes 45 of the 48 correlation blocks (0.90 → 3 left, 0.95 → 0, and
+   `exp-corr-t95` is bit-identical to `exp-corr-off`, i.e. every blocked pair was
+   ≥ 0.95-correlated — crypto majors). The crypto book does not grow by it: the
+   freed slots are absorbed immediately by `max_crypto_exposure` (13 → 21 blocks).
+   The crypto leg is capped twice over, and on this universe the correlation cap
+   is mostly another way of writing the same $5,000 / 8-crypto-slot cap.
+2. **The trades it blocks are below-average, by 2–5x.** From the new
+   `scripts/analysis_marginal_trades.py` (fills matched on date+symbol+side
+   against the control's, added round trips priced at their own realized P&L):
+
+| variant | entries added / dropped | round trips added | mean added P&L | vs control expectancy | extra fees |
+|---|---|---|---|---|---|
+| `exp-corr-t90` | +40 / -4 | +39 | +$7.02 | **0.27x** | +$99.69 |
+| `exp-corr-off` | +43 / -5 | +42 | +$5.37 | **0.21x** | +$105.97 |
+| `exp-corr-match2` | +22 / -5 | +21 | +$15.64 | **0.61x** | +$45.62 |
+
+That is the *opposite* of the whipsaw filter's result (there, the marginal
+crossings earned the desk's average dollar and cutting them cut dollars with
+expectancy unchanged). Here the guard is selecting: the crypto entries it refuses
+pay the same 25 bps taker fee and earn a fifth of the desk's $25.75/trade.
+
+**Verdict: the guard stays, and it is now measured rather than defended.**
+Loosening it buys +0.5–0.6pp of total return for +0.3–0.7pp of drawdown —
+return per unit of drawdown falls from 3.92 to 3.29 (threshold) or 3.70
+(`match2`) — and with a 5% halt that latches, spending 0.7pp of the desk's
+2.21pp of headroom for half a point of return is a bad trade in the tail where
+it matters. The `match2` row is the least-bad relaxation (best DSR 0.937, DD
+-3.12%) and is still dominated on ret/DD. Prior art agrees on the mechanism
+rather than the knob: Hurst–Ooi–Pedersen (*A Century of Evidence on
+Trend-Following Investing*) find trend following performs best in low
+pairwise-correlation environments and worse as correlations rise, and Quest's
+trend-following whitepaper proposes a covariance filter on trend trades for
+exactly the drawdown effect (volatility −27%, drawdown −62% on their book).
+
+**Consequence:** with signals, windows, breadth, pruning, stops, execution *and*
+now the portfolio guards all measured neutral-to-negative, the only measured
+dollar lever left is the **2x size step** ($1,250 slots, $21,250 gross, +20.47%
+vs +10.84% with the recovery rule it ships) — a human decision, as before.
+Adoption of any relaxation would need a new run_id anyway (the frozen check
+pins 0.80 / 1 on `run2` and `run3`), and the measurement does not support it.
+
+Caveat: one path each, one window, and three of the five rows are one knob apart
+— compare the control against a variant, not the variants against each other.
+The marginal lens is first-order by construction (date+symbol+side matching
+labels a displaced position as one added *and* one dropped trip instead of
+netting it).
+
+```bash
+for m in exp-corr-t90 exp-corr-t95 exp-corr-off exp-corr-match2; do
+  .venv/bin/money portfolio-backtest --run-config config/experiments/$m.yaml
+done
+.venv/bin/python scripts/analysis_experiment_table.py \
+    exp-slots-all-recover exp-corr-t90 exp-corr-t95 exp-corr-off exp-corr-match2
+.venv/bin/python scripts/analysis_marginal_trades.py --control exp-slots-all-recover \
+    exp-corr-t90 exp-corr-off exp-corr-match2
+```

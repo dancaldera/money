@@ -131,6 +131,8 @@ Research/attribution scripts over the cached bars and the gitignored artifacts
     --artifact results/exp-slots-all-recover/portfolio-backtest --notional 625
 .venv/bin/python scripts/analysis_experiment_table.py \   # one table for a sweep of replays
     exp-slots-all-recover exp-sma-3-15 exp-sma-5-20 exp-sma-8-24
+.venv/bin/python scripts/analysis_marginal_trades.py \   # what a rule change added
+    --control exp-slots-all-recover exp-corr-off exp-corr-match2
 ```
 
 The second one answers "should we cut the losing symbols?" with a walk-forward
@@ -156,6 +158,16 @@ The sweep table (`analysis_experiment_table.py`, the fifth command above) answer
 "which of these replays actually won" without hand-copying five `summary.json`
 files — and refuses to imply a comparison it cannot support, since rows replayed
 on different cache dates are not measured on the same bars.
+
+The last one (`analysis_marginal_trades.py`) answers the follow-up the sweep
+table cannot: *which* trades the variant actually added or dropped, and whether
+they are better or worse than the control's average trade (it matches fills on
+date+symbol+side and prices the added round trips at their own realized P&L).
+That is the number that decides a guard or filter: a rule that blocks
+below-average trades earns its keep even when it costs a little return, while
+one that blocks average trades is only throttling deployment. Read it beside the
+`blocked_by` census in `decisions.csv`, which names the guard that freed the
+slot.
 
 `DRY_RUN=1` never advances `.last_success_paperscan` — it writes
 `.last_preview_paperscan` instead. The 22:00 catch-up guard decides on the success
