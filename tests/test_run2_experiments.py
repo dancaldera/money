@@ -32,6 +32,7 @@ KNOWN = {
     "exp-slots-all",
     "exp-slots-all-2x",
     "exp-slots-all-2x-recover",
+    "exp-slots-all-2x-breakeven10",
     "exp-slots-all-3x-recover",
     "exp-slots-all-recover",
     "exp-stocks-only",

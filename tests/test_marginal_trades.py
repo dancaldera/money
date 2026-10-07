@@ -117,10 +117,13 @@ def test_added_mean_is_reported_against_the_control_expectancy(tmp_path):
     # control trips: -20 and +40 -> expectancy $10/trade
     assert stats["control_expectancy"] == pytest.approx(10.0)
     assert stats["expectancy_multiple"] == pytest.approx(-1.0)
+    assert stats["net_pnl"] == pytest.approx(-26.0)  # -20 added - 0 dropped - 6 fees
     report = marginal_trades.format_report("exp-ctrl", control, "exp-loose", stats)
     assert "expectancy $+10.00/trade" in report
     assert "-1.00x the control's expectancy" in report
-    assert "below-average trades" in report
+    assert "below-average dollars" in report
+    assert "net effect       $-26.00" in report
+    assert "costs dollars" in report
 
 
 def test_extra_fees_and_dropped_trips_are_read_from_the_fills(tmp_path):
@@ -140,7 +143,13 @@ def test_extra_fees_and_dropped_trips_are_read_from_the_fills(tmp_path):
     assert stats["removed_pnl"] == pytest.approx(-20.0)
     assert stats["added_pnl"] == pytest.approx(5.0)
     assert stats["extra_fees"] == pytest.approx(6.0 - 3.0)  # variant fees - control fees
+    # The dropped BTC trip lost $20, so removing it *gains* $20 of dollars:
+    # net = 5 added - (-20) dropped - 3 fees = +22.
+    assert stats["net_pnl"] == pytest.approx(22.0)
     assert stats["completed_delta"] == 0
+    report = marginal_trades.format_report("exp-ctrl", control, "exp-tight", stats)
+    assert "net effect       $+22.00" in report
+    assert "pays for itself" in report
 
 
 def test_main_prints_one_block_per_variant(tmp_path, capsys):

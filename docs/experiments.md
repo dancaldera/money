@@ -383,6 +383,55 @@ until the per-trade expectancy is estimated more tightly.
 drawdown resume, calendar resume, a second halt after a re-baselined resume) and
 `tests/test_run2_experiments.py` pins both new manifests to the research path.
 
+## Measured: does the breakeven stop rescue the size step? — no (one clock, 2022-01-01 → 2026-10-06)
+
+Two candidate levers were left on the run3 basis — the 2x size step and the
+breakeven stop (`stop_breakeven_at_pct: 10`). Each was measured alone; the pair
+was not. The question is whether the *loser's* rule helps the *winner*: at 2x the
+desk trips the 5% halt once (the 2022-11-09 episode), and a stop that parks at
+entry once a close is ≥ +10% removes give-back, so it could in principle both
+raise the return and buy halt headroom (`exp-slots-all-2x-breakeven10`). All
+five rows replayed in one session on the same cached data, so the only
+differences are `position_notional` and the stop knob:
+
+```bash
+.venv/bin/money portfolio-backtest --run-config config/experiments/exp-slots-all-recover.yaml
+.venv/bin/money portfolio-backtest --run-config config/experiments/exp-slots-all-breakeven10.yaml
+.venv/bin/money portfolio-backtest --run-config config/experiments/exp-slots-all-2x-recover.yaml
+.venv/bin/money portfolio-backtest --run-config config/experiments/exp-slots-all-2x-breakeven10.yaml
+.venv/bin/money portfolio-backtest --run-config config/experiments/exp-slots-all-3x-recover.yaml
+```
+
+| manifest | return | maxDD | ret/DD | trades | win% | expectancy | total | Sharpe | PF | DSR | halts / flat |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| `exp-slots-all-recover` (live values) | +10.98% | -2.79% | 3.94 | 366 | 30.1% | +$25.75 | $9,424 | 0.821 | 1.86 | 0.937 | 0 / 0 |
+| `exp-slots-all-breakeven10` (1x + stop) | +10.95% | **-2.53%** | **4.32** | 368 | 25.8% | +$26.51 | $9,755 | 0.829 | 1.97 | **0.944** | 0 / 0 |
+| `exp-slots-all-2x-recover` (the step) | +21.06% | -5.43% | 3.88 | 366 | 30.6% | +$49.03 | $17,944 | 0.791 | 1.82 | 0.926 | 1 / 20 |
+| `exp-slots-all-2x-breakeven10` (step + stop) | +20.15% | -5.06% | 3.98 | 360 | 25.0% | +$49.35 | $17,766 | 0.786 | 1.89 | 0.937 | 1 / 20 |
+| `exp-slots-all-3x-recover` (for scale) | +29.82% | -8.45% | 3.53 | 358 | 29.6% | +$70.21 | — | 0.758 | 1.78 | 0.907 | 2 / 40 |
+
+**The stop does not rescue the size step.** Stacked on 2x it *costs* 0.91pp of
+return for 0.37pp of drawdown: ret/DD 3.88 → 3.98, inside the noise of a single
+path, while the dollars fall $17,944 → $17,766. The marginal lens
+(`scripts/analysis_marginal_trades.py --control exp-slots-all-2x-recover
+exp-slots-all-2x-breakeven10`) says why: the rule rewrites 50 control round trips
+worth **$2,277** (mean $45.5) into 44 others worth **$1,571** (mean $35.70,
+**0.73x** the control's $49.03 expectancy) plus $43 of extra fees — it drops its
+better-than-added trips and pays fees to do it, net **-$749**.
+And it does not buy the headroom either: the halt merely moves later (2022-11-09
+→ 2022-12-27, deepest dd -5.23% → -5.06%) and still costs a 20-session flat.
+Conclusion: **keep the size step simple — 2x alone** (`exp-slots-all-2x-recover`),
+and do not stack the stop on it.
+
+The same table re-prices the stop on the live 1x book, where it is *not* a cost:
++10.95% against +10.98% (return unchanged) with maxDD -2.53% vs -2.79%, PF
+1.86 → 1.97, DSR 0.937 → 0.944, on more trades (368 vs 366). That is the same
+consistent-sign result the 2026-09-19 run found (+10.51% / -2.53% vs +10.25% /
+-2.79%), now on a refreshed clock: a small drawdown trim with the dollars intact,
+worth ~0.3pp of extra halt headroom. Still not conclusive on its own (DSR 0.944),
+but it is the one change that is free of dollar cost — a candidate to fold into
+the next live run rather than a lever to adopt now.
+
 ## Measured: the fee bill by leg, on the run3 basis
 
 The ladder above is already fee-net (the replay charges `crypto_taker_fee_bps` /
@@ -740,8 +789,13 @@ Loosening it buys +0.5–0.6pp of total return for +0.3–0.7pp of drawdown —
 return per unit of drawdown falls from 3.92 to 3.29 (threshold) or 3.70
 (`match2`) — and with a 5% halt that latches, spending 0.7pp of the desk's
 2.21pp of headroom for half a point of return is a bad trade in the tail where
-it matters. The `match2` row is the least-bad relaxation (best DSR 0.937, DD
--3.12%) and is still dominated on ret/DD. Prior art agrees on the mechanism
+it matters. The net-dollar lens is explicit about what is being traded: relaxing
+the cap *adds* dollars (net effect +$286 t90, +$284 off, +$447 match2 — first
+order, against the path table's +$510/+$620), so the guard is not a dollar cost,
+it is a **drawdown-efficiency cost** — and the 2x step buys 10pp of return at
+unchanged efficiency (3.88 vs 3.94), which dominates it outright. The `match2`
+row is the least-bad relaxation (best DSR 0.937, DD -3.12%) and is still
+dominated on ret/DD. Prior art agrees on the mechanism
 rather than the knob: Hurst–Ooi–Pedersen (*A Century of Evidence on
 Trend-Following Investing*) find trend following performs best in low
 pairwise-correlation environments and worse as correlations rise, and Quest's
@@ -750,8 +804,9 @@ exactly the drawdown effect (volatility −27%, drawdown −62% on their book).
 
 **Consequence:** with signals, windows, breadth, pruning, stops, execution *and*
 now the portfolio guards all measured neutral-to-negative, the only measured
-dollar lever left is the **2x size step** ($1,250 slots, $21,250 gross, +20.47%
-vs +10.84% with the recovery rule it ships) — a human decision, as before.
+dollar lever left is the **2x size step** ($1,250 slots, $21,250 gross, +21.06%
+vs +10.98% with the recovery rule it ships, at unchanged ret/DD) — a human
+decision, as before.
 Adoption of any relaxation would need a new run_id anyway (the frozen check
 pins 0.80 / 1 on `run2` and `run3`), and the measurement does not support it.
 

@@ -6,8 +6,10 @@ the variant differs from the control by exactly one guard or filter — the
 correlation cap, the whipsaw gate, a maker entry — the question that decides
 adoption is sharper than the path: **are the trades the rule blocks better or
 worse than the desk's average trade?** A rule that suppresses below-average
-trades is earning its keep even when it costs a little return; one that
-suppresses average trades is just throttling deployment.
+trades is a candidate even when it costs a little return — but the added average
+is not the verdict: a rule can block below-average trades and still lose dollars
+if it blocks more than it adds. The script prints both, and the **net effect**
+(added P&L − dropped P&L − extra fees) is the number adoption turns on.
 
 The two replays write the same ``trades.csv`` schema (one row per fill; the
 ``realized_pl`` of a round trip is booked on its ``sell`` row, ``buy`` rows carry
@@ -89,6 +91,8 @@ def marginal(control: pd.DataFrame, variant: pd.DataFrame) -> dict:
     control_trips = control[control.side == "sell"]
 
     added_pnl = float(added_trips["realized_pl"].sum()) if len(added_trips) else 0.0
+    removed_pnl = float(removed_trips["realized_pl"].sum()) if len(removed_trips) else 0.0
+    extra_fees = float(variant["fee"].sum() - control["fee"].sum())
     control_expectancy = float(control_trips["realized_pl"].mean()) if len(control_trips) else 0.0
     return {
         "added_entries": int(len(added_entries)),
@@ -100,8 +104,13 @@ def marginal(control: pd.DataFrame, variant: pd.DataFrame) -> dict:
         "added_mean": added_pnl / len(added_trips) if len(added_trips) else 0.0,
         "added_by_asset": _by_asset_pnl(added_trips),
         "removed_round_trips": int(len(removed_trips)),
-        "removed_pnl": float(removed_trips["realized_pl"].sum()) if len(removed_trips) else 0.0,
-        "extra_fees": float(variant["fee"].sum() - control["fee"].sum()),
+        "removed_pnl": removed_pnl,
+        "extra_fees": extra_fees,
+        # The dollar verdict of the change: what the new trips earn, minus what
+        # the dropped trips earned, minus the fees it takes to do it. A rule can
+        # block below-average trades and still lose money (it blocks more than it
+        # adds), so this — not the added mean — is what adoption turns on.
+        "net_pnl": added_pnl - removed_pnl - extra_fees,
         "completed_delta": int(len(variant[variant.side == "sell"]) - len(control_trips)),
         "control_expectancy": control_expectancy,
         "expectancy_multiple": (added_pnl / len(added_trips) / control_expectancy)
@@ -135,11 +144,16 @@ def format_report(control_id: str, control: pd.DataFrame, variant_id: str, stats
         f"  dropped trips    -{stats['removed_round_trips']} "
         f"realized ${stats['removed_pnl']:+,.2f}",
         f"  extra fees       ${stats['extra_fees']:+,.2f}",
+        f"  net effect       ${stats['net_pnl']:+,.2f} (added - dropped - fees) — "
+        f"the change {'pays for itself' if stats['net_pnl'] > 0 else 'costs dollars'}.",
     ]
-    if stats["expectancy_multiple"] == stats["expectancy_multiple"] and stats["expectancy_multiple"] < 1:
+    if stats["expectancy_multiple"] == stats["expectancy_multiple"]:
+        rel = "below" if stats["expectancy_multiple"] < 1 else "above"
         lines.append(
-            "  read: the rule blocks below-average trades — it is earning its keep, "
-            "not throttling the desk."
+            f"  read: the added trips earn {rel}-average dollars "
+            f"({stats['expectancy_multiple']:.2f}x the control's expectancy). "
+            "Weigh the net effect above against the drawdown the change costs — "
+            "neither number alone decides adoption."
         )
     return "\n".join(lines)
 
