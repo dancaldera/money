@@ -396,3 +396,149 @@ def test_hourly_watchdog_wires_the_salvage_in_coverage_mode():
     assert "COVERAGE_ONLY=1 bash" in text
     assert "cron_catchup_daily.sh" in text
     assert "HEALTH_SNAPSHOT" not in text  # no test hook in the live path
+
+
+# --- stop monitor: retry on transient broker failures, and never hide a failure
+#
+# The 8% stop is the only intraday protection the book has, and it is a 30-min
+# tick: a tick that dies on a DNS blip or a reset connection leaves every open
+# position unenforced until the next one (measured 2026-10-08: 03:48 CST
+# ConnectionResetError(54), 07:40 CST NameResolutionError — ~54 min unprotected
+# with BTC already -5%). Two rules are pinned here: a *transport* failure is
+# retried in place, and the CLI's exit code reaches the caller, because the
+# silent cron wrapper's alert branch (`rc -ne 0`) was unreachable while the
+# wrapper always exited 0 — so a failed stop check was invisible everywhere the
+# operator looks (no EMAIL_* keys in .env, the desktop notification the only
+# other alert).
+
+STOP_WRAPPER = ROOT / "scripts" / "intraday_stop_run.sh"
+SILENT_STOP = ROOT / "scripts" / "cron_silent_stop_run.sh"
+
+# A stub `money` CLI: calls 1..STUB_FAILS-1 of paper-stops fail (printing
+# `$STUB_ERR`, which is what the retry regex reads), then it succeeds —
+# STUB_FAILS is the number of the first call that succeeds.
+_STUB = """#!/bin/bash
+echo "$@" >> "$STUB_CALLS"
+[ "$1" = "paper-stops" ] || exit 0
+n="$(grep -c '^paper-stops' "$STUB_CALLS")"
+if [ "$n" -lt "${STUB_FAILS:-0}" ]; then
+  printf '%s\\n' "${STUB_ERR:-NameResolutionError: Max retries exceeded}"
+  exit 1
+fi
+printf '%s\\n' "  AAPL       P&L=+1.00% action=none" \
+              "  reconciliation: fills=0 fees=0 halted=False"
+exit 0
+"""
+
+
+def _stop_env(tmp_path, **over):
+    stub = tmp_path / "money_stub"
+    stub.write_text(_STUB)
+    stub.chmod(0o755)
+    calls = tmp_path / "calls"
+    # Silence the desktop notification path (osascript on macOS, notify-send on
+    # Linux): the tests are about the exit code, not about popping up alerts.
+    quiet = tmp_path / "bin"
+    quiet.mkdir(exist_ok=True)
+    for tool in ("osascript", "notify-send"):
+        (quiet / tool).write_text("#!/bin/bash\nexit 0\n")
+        (quiet / tool).chmod(0o755)
+    env = dict(
+        os.environ,
+        PATH=f"{quiet}:{os.environ.get('PATH', '')}",
+        MONEY_BIN=str(stub),
+        STUB_CALLS=str(calls),
+        STOP_LOG=str(tmp_path / "stop.log"),
+        STOP_HEARTBEAT=str(tmp_path / "stop_hb"),
+        STOP_RETRY_SLEEP="0",
+    )
+    env.update(over)
+    return env, calls, tmp_path / "stop_hb"
+
+
+def _stop_calls(calls: Path) -> int:
+    return sum(1 for line in calls.read_text().splitlines() if line.startswith("paper-stops"))
+
+
+def _run_stop(script, env) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["bash", str(script)], capture_output=True, text=True, env=env, cwd=str(ROOT)
+    )
+
+
+def test_stop_wrapper_retries_a_transient_broker_failure(tmp_path):
+    env, calls, hb = _stop_env(tmp_path, STUB_FAILS="3")
+    done = _run_stop(STOP_WRAPPER, env)
+    assert done.returncode == 0
+    assert _stop_calls(calls) == 3  # two transient failures, then the real check
+    assert hb.exists()  # the run counts as successful
+    log = (tmp_path / "stop.log").read_text()
+    assert "transient broker failure on attempt 1/3" in log
+    assert "transient broker failure on attempt 2/3" in log
+    assert "Stop monitor attempts used: 3" in log and "Exit code: 0" in log
+
+
+def test_stop_wrapper_retry_is_bounded_and_surfaces_the_failure(tmp_path):
+    """Three failures must not become an unbounded loop — and the run must end
+    non-zero so the silent cron wrapper can alert instead of swallowing it."""
+    env, calls, hb = _stop_env(tmp_path, STUB_FAILS="9")
+    done = _run_stop(STOP_WRAPPER, env)
+    assert _stop_calls(calls) == 3
+    assert done.returncode == 1 and not hb.exists()
+    assert "Exit code: 1" in (tmp_path / "stop.log").read_text()
+
+
+def test_stop_wrapper_never_retries_after_acting_on_a_position(tmp_path):
+    """A re-run after a submitted close could double-submit, so any
+    ``action=stopped`` line ends the loop even though the failure looks transport."""
+    env, calls, hb = _stop_env(
+        tmp_path, STUB_FAILS="9", STUB_ERR="  AAPL  P&L=-9.00% action=stopped\nboom ConnectionResetError"
+    )
+    done = _run_stop(STOP_WRAPPER, env)
+    assert _stop_calls(calls) == 1
+    assert done.returncode == 1
+    assert "failed after acting on a position" in (tmp_path / "stop.log").read_text()
+
+
+def test_stop_wrapper_never_retries_a_failure_a_retry_cannot_fix(tmp_path):
+    """A frozen-manifest mismatch or a BrokerError is deterministic: retrying only
+    delays the alert."""
+    env, calls, _ = _stop_env(tmp_path, STUB_FAILS="9", STUB_ERR="BrokerError: frozen values changed")
+    done = _run_stop(STOP_WRAPPER, env)
+    assert _stop_calls(calls) == 1 and done.returncode == 1
+
+
+def test_failed_stop_monitor_reaches_the_silent_cron_wrapper(tmp_path):
+    """End to end: the failure must produce the alert line the Hermes job delivers
+    (empty stdout = nothing sent), which required the inner wrapper's exit code."""
+    env, _, _ = _stop_env(tmp_path, STUB_FAILS="9")
+    done = _run_stop(SILENT_STOP, env)
+    assert done.returncode == 0  # the silent wrapper always exits 0 by design
+    assert "stop monitor FALL" in done.stdout
+    # ...and a healthy run stays silent.
+    ok_env, _, _ = _stop_env(tmp_path, STUB_FAILS="0")
+    quiet = _run_stop(SILENT_STOP, ok_env)
+    assert quiet.stdout.strip() == ""
+
+
+def test_stop_wrapper_defaults_still_point_at_the_repo_cli():
+    """The seams are opt-in: the live path must keep using the venv CLI, or the
+    scheduled job would run a stub (or fail to find `money`)."""
+    text = STOP_WRAPPER.read_text()
+    assert 'MONEY="${MONEY_BIN:-$REPO_DIR/.venv/bin/money}"' in text
+    assert '.venv/bin/money" paper-stops' not in text  # all calls go through $MONEY
+
+
+def test_dry_run_preview_never_advances_the_stop_heartbeat(tmp_path):
+    """A DRY_RUN preview places no stops, so it must not satisfy the hourly
+    watchdog's staleness check for the stop monitor — the same rule the scan
+    heartbeat already follows (record_scan_success). It keeps its own marker."""
+    preview = tmp_path / ".last_preview_stopmonitor"
+    env, _, hb = _stop_env(tmp_path, DRY_RUN="1", STOP_PREVIEW_HEARTBEAT=str(preview))
+    assert _run_stop(STOP_WRAPPER, env).returncode == 0
+    assert preview.exists() and not hb.exists()
+    assert "success heartbeat NOT advanced" in (tmp_path / "stop.log").read_text()
+    # a real (non-preview) success still advances the success heartbeat
+    env, _, hb = _stop_env(tmp_path)
+    assert _run_stop(STOP_WRAPPER, env).returncode == 0 and hb.exists()
+

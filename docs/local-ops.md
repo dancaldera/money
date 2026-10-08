@@ -83,6 +83,27 @@ Job health has to be read from `~/.hermes/cron/executions.db`, not from
 `last_status`: check `started_at`/`finished_at` (a 909s outlier is a watchdog kill,
 a 400-1500s one is a hung broker/DNS call) and `cron_incidents` for the error text.
 
+The intraday stop monitor (30-min tick) has the opposite problem: it is the only
+protection an open position has between daily scans and it has **no catch-up**, so a
+tick lost to the network leaves the book unprotected until the next one — measured
+2026-10-08 03:48 CST (`ConnectionResetError(54)`) and 07:40 CST
+(`NameResolutionError`), ~54 min with BTC already -5%. It used to be invisible too:
+`intraday_stop_run.sh` always exited 0 (the failure branch ends in `|| true` and an
+`if` returns 0), so `cron_silent_stop_run.sh`'s `rc -ne 0` branch was dead code and
+the Hermes job still reported ok — the desktop notification was the only alert and
+`EMAIL_*` is unset (the email path just logs "Email reports not configured"). Both
+halves are fixed and pinned by tests in `tests/test_schedule_scripts.py`: a
+**transient transport** failure (`ConnectionError`, `NameResolutionError`,
+`ConnectionResetError`, `Max retries exceeded`, read/connect timeouts) is retried in
+place (`STOP_MAX_ATTEMPTS` 3, `STOP_RETRY_SLEEP` 45s), the loop stops the moment any
+`action=stopped`/`would_stop` line appears (a re-run after a submitted close could
+double-submit), a non-transient error is not retried at all, and the CLI's exit code
+now reaches the caller so the silent job speaks. Test seams (opt-in, like
+`PAPERSCAN_HEARTBEAT`): `MONEY_BIN`, `STOP_LOG`, `STOP_HEARTBEAT`. A **hang** is still
+unbounded — `requests` runs without a timeout here and macOS has no `timeout(1)` — so
+a hung call is only caught by the job's 3600s watchdog (2026-10-07 10:24); that is the
+next gap to close.
+
 Inspect: `hermes cron list` / `cronjob_manage(action='list')`. Trading jobs
 save locally (`deliver: local`). The 09:00 buy/hold/sell briefing posts into
 the Hermes chat it was created from (continuable).
