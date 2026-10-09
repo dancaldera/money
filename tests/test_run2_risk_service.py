@@ -228,6 +228,32 @@ def test_stop_uses_fill_derived_entry_not_broker_cost_basis(tmp_path):
         ledger.close()
 
 
+def test_check_stops_holds_back_a_close_that_is_already_in_flight(tmp_path):
+    """The wrapper retries a transient transport failure, so the next attempt must
+    not re-sell a position whose close was accepted but not yet reconciled — the
+    ledger still shows it open until the fill lands."""
+    cfg, ledger = initialized_ledger(tmp_path)
+    broker = FakeBroker()
+    broker.positions = lambda: [
+        {"symbol": "AAPL", "qty": 6.25, "avg_entry": 0, "current_price": 91.9}
+    ]
+    try:
+        add_fill(ledger, cfg, "AAPL", "stock", "buy", 6.25, 100, "01")
+        service = Run2Service(cfg, ledger, broker)
+        assert service.check_stops()[0]["action"] == "stopped"
+        again = service.check_stops()
+        assert again[0]["action"] == "none"
+        assert again[0]["reason"] == "close_in_flight"
+        assert broker.closed == ["AAPL"]  # exactly one close, not two
+        ledger.set_decision_status(
+            ledger.decisions(cfg.run_id, "baseline", "submitted")[0]["decision_id"], "filled"
+        )
+        assert service.check_stops()[0]["action"] == "stopped"  # guard releases
+        assert broker.closed == ["AAPL", "AAPL"]
+    finally:
+        ledger.close()
+
+
 def test_correlation_cap_counts_only_sufficient_aligned_history(tmp_path):
     cfg, ledger = initialized_ledger(tmp_path)
     try:

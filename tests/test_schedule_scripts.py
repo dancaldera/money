@@ -508,6 +508,20 @@ def test_stop_wrapper_never_retries_a_failure_a_retry_cannot_fix(tmp_path):
     assert _stop_calls(calls) == 1 and done.returncode == 1
 
 
+def test_stop_wrapper_retries_a_bounded_http_timeout(tmp_path):
+    """The bounded HTTP timeout (trading/net.py) turns a hang into a transport
+    error, which must be retried in place rather than ending the tick — a
+    connect timeout reads "... timed out. (connect timeout=5)"."""
+    env, calls, hb = _stop_env(
+        tmp_path, STUB_FAILS="2",
+        STUB_ERR="requests.exceptions.ConnectTimeout: Connection to paper-api.alpaca.markets timed out. (connect timeout=5)",
+    )
+    done = _run_stop(STOP_WRAPPER, env)
+    assert done.returncode == 0 and _stop_calls(calls) == 2
+    assert hb.exists()
+    assert "transient broker failure on attempt 1/3" in (tmp_path / "stop.log").read_text()
+
+
 def test_failed_stop_monitor_reaches_the_silent_cron_wrapper(tmp_path):
     """End to end: the failure must produce the alert line the Hermes job delivers
     (empty stdout = nothing sent), which required the inner wrapper's exit code."""

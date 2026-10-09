@@ -25,14 +25,20 @@ rotate_log "$LOG"
 # connection fails one 30-min tick and leaves every open position unenforced
 # until the next one — measured 2026-10-08 03:48 CST (ConnectionResetError(54))
 # and 07:40 CST (NameResolutionError), ~54 min of unprotected book while BTC was
-# already -5%. paper-stops only reads state and closes breached positions, so a
-# retry after a *read* failure cannot duplicate anything; the loop still stops
-# the moment any action was taken, because re-running after a submitted close
-# could double-submit. Failures a retry cannot fix (BrokerError, RunSafetyError,
-# a frozen-manifest mismatch) are not in the pattern and end the loop at once.
+# already -5%. paper-stops only reads state and closes breached positions, and it
+# holds back a symbol whose stop order is already submitted-and-unreconciled, so
+# a retry cannot double-submit; the loop still stops the moment any action was
+# taken, as a second line. Failures a retry cannot fix (BrokerError,
+# RunSafetyError, a frozen-manifest mismatch) are not in the pattern and end the
+# loop at once.
+#
+# The bounded HTTP timeout (trading/net.py, 5s connect / 20s read) turns a hang
+# — measured 2026-10-07 04:47 CST: a broker call blocked past the job's 3600s
+# watchdog and the next tick only ran 6h later, ~12 ticks unenforced — into one
+# of these transient messages, so "timed out" MUST stay in the pattern.
 STOP_MAX_ATTEMPTS="${STOP_MAX_ATTEMPTS:-3}"
 STOP_RETRY_SLEEP="${STOP_RETRY_SLEEP:-45}"
-TRANSIENT_RE='ConnectionError|NameResolutionError|ConnectionResetError|Max retries exceeded|Connection reset by peer|Read timed out|Temporary failure in name resolution'
+TRANSIENT_RE='ConnectionError|NameResolutionError|ConnectionResetError|Max retries exceeded|Connection reset by peer|timed out|Temporary failure in name resolution'
 
 # Set DRY_RUN=1 to report breaches without closing anything (for testing).
 EXTRA=""

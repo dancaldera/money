@@ -11,6 +11,8 @@ from alpaca.data.historical import CryptoHistoricalDataClient, StockHistoricalDa
 from alpaca.data.requests import CryptoBarsRequest, StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 
+from ..net import bound_http_timeout
+
 
 class AlpacaDataError(RuntimeError):
     """Raised when authenticated Run 2 market data is unavailable or malformed."""
@@ -89,7 +91,7 @@ def fetch_alpaca_daily(
             adjustment=Adjustment.ALL,
             feed=DataFeed.IEX,
         )
-        result = StockHistoricalDataClient(key, secret).get_stock_bars(request)
+        result = bound_http_timeout(StockHistoricalDataClient(key, secret)).get_stock_bars(request)
     elif asset == "crypto":
         request = CryptoBarsRequest(
             symbol_or_symbols=symbol,
@@ -97,7 +99,7 @@ def fetch_alpaca_daily(
             start=start,
             end=end,
         )
-        result = CryptoHistoricalDataClient(key, secret).get_crypto_bars(request)
+        result = bound_http_timeout(CryptoHistoricalDataClient(key, secret)).get_crypto_bars(request)
     else:
         raise AlpacaDataError(f"Unknown asset {asset!r}")
     return _frame(result, symbol)

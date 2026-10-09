@@ -386,6 +386,19 @@ class Run2Service:
         if self.broker is None:
             raise RunSafetyError("A paper broker is required to check stops")
         broker_positions = {p["symbol"].replace("/", ""): p for p in self.broker.positions()}
+        # A close whose fill has not been reconciled yet still leaves the position
+        # in the ledger, so re-submitting on the next attempt (the wrapper retries
+        # a transient transport failure — see scripts/intraday_stop_run.sh) would
+        # sell more than the position holds: a fail-closed qty halt at best, a
+        # short leg on a margin paper account at worst. Hold back any symbol whose
+        # stop order is already in flight. reconcile() marks the decision "filled"
+        # once the order fills and "rejected"/"canceled" if the broker refused it,
+        # so a lingering "submitted" sell intent means the close is genuinely open.
+        in_flight = {
+            row["symbol"]
+            for row in self.ledger.decisions(self.cfg.run_id, "baseline", "submitted")
+            if row["action"] == "sell_intent"
+        }
         out: list[dict[str, Any]] = []
         for symbol, pos in self.ledger.positions(self.cfg.run_id, "baseline").items():
             broker_pos = broker_positions.get(symbol.replace("/", ""))
@@ -396,6 +409,14 @@ class Run2Service:
             plpc = (price / pos.avg_entry - 1) * 100 if pos.avg_entry else Decimal(0)
             if plpc > -Decimal(str(self.cfg.strategy.stop_loss_pct)):
                 out.append({"symbol": symbol, "action": "none", "plpc": float(plpc)})
+                continue
+            if symbol in in_flight:
+                out.append({
+                    "symbol": symbol,
+                    "action": "none",
+                    "reason": "close_in_flight",
+                    "plpc": float(plpc),
+                })
                 continue
             now = utc_now()
             decision_id = self.ledger.record_decision(

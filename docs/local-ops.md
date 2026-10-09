@@ -96,13 +96,22 @@ halves are fixed and pinned by tests in `tests/test_schedule_scripts.py`: a
 **transient transport** failure (`ConnectionError`, `NameResolutionError`,
 `ConnectionResetError`, `Max retries exceeded`, read/connect timeouts) is retried in
 place (`STOP_MAX_ATTEMPTS` 3, `STOP_RETRY_SLEEP` 45s), the loop stops the moment any
-`action=stopped`/`would_stop` line appears (a re-run after a submitted close could
-double-submit), a non-transient error is not retried at all, and the CLI's exit code
-now reaches the caller so the silent job speaks. Test seams (opt-in, like
-`PAPERSCAN_HEARTBEAT`): `MONEY_BIN`, `STOP_LOG`, `STOP_HEARTBEAT`. A **hang** is still
-unbounded — `requests` runs without a timeout here and macOS has no `timeout(1)` — so
-a hung call is only caught by the job's 3600s watchdog (2026-10-07 10:24); that is the
-next gap to close.
+`action=stopped`/`would_stop` line appears, a non-transient error is not retried at
+all, and the CLI's exit code now reaches the caller so the silent job speaks. Test
+seams (opt-in, like `PAPERSCAN_HEARTBEAT`): `MONEY_BIN`, `STOP_LOG`, `STOP_HEARTBEAT`.
+
+A **hang** is bounded now. `requests` has no default timeout and alpaca-py never
+passes one, so a half-open TCP connection blocked a tick past the job's 3600s
+watchdog (2026-10-07 10:24, first seen 2026-09-18) and the monitor's next tick only
+ran ~6h later. Every Alpaca client we build carries a `(5s connect, 20s read)` default
+(`trading/net.py`, installed in `PaperBroker.__init__` and at the two data-fetch
+sites), which turns that hang into the retryable `timed out` transport error above;
+an explicit per-call timeout still wins, and the wrapper's pattern must keep
+`timed out` (pinned by `test_stop_wrapper_retries_a_bounded_http_timeout`). The retry
+also cannot double-submit a close: `Run2Service.check_stops` holds back any symbol
+whose stop order is already `submitted`-and-unreconciled
+(`reason=close_in_flight`), so a failure landing *after* the close was accepted is a
+no-op on the next attempt.
 
 Inspect: `hermes cron list` / `cronjob_manage(action='list')`. Trading jobs
 save locally (`deliver: local`). The 09:00 buy/hold/sell briefing posts into

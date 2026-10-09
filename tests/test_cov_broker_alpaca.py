@@ -8,11 +8,13 @@ from unittest.mock import MagicMock
 
 import pandas as pd
 import pytest
+import requests
 
 from trading.data import alpaca as alpaca_mod
 from trading.data.alpaca import AlpacaDataError, _as_utc, _credentials, _frame, fetch_alpaca_daily
 from trading.live import broker as broker_mod
 from trading.live.broker import BrokerError, PaperBroker, _position_symbol
+from trading.net import HTTP_TIMEOUT, bound_http_timeout
 
 
 def _bars_df(n=3, start="2026-08-20"):
@@ -329,3 +331,69 @@ def test_close_strips_slash(fake_clients):
     b = PaperBroker(api_key="k", secret_key="s")
     assert b.close("BTC/USD") == "close-9"
     assert fake_clients.closed_syms == ["BTCUSD"]
+
+
+# --- net.bound_http_timeout --------------------------------------------------- #
+# An unbounded broker call once blocked a stop-monitor tick past the job's 3600s
+# watchdog and the monitor did not run again for six hours (2026-10-07 04:47 CST).
+class _RecordingSession(requests.Session):
+    """Stands in for alpaca-py's bare session: records the kwargs it is called with."""
+
+    def __init__(self):
+        super().__init__()
+        self.seen: dict = {}
+
+    def request(self, method, url, **kwargs):
+        self.seen.update(kwargs)
+        return "ok"
+
+
+def test_bound_http_timeout_injects_a_default_and_yields_to_an_explicit_one():
+    session = _RecordingSession()
+    client = SimpleNamespace(_session=session)
+    assert bound_http_timeout(client) is client
+    assert session.request("GET", "https://example.test") == "ok"
+    assert session.seen["timeout"] == HTTP_TIMEOUT
+    session.request("GET", "https://example.test", timeout=1)
+    assert session.seen["timeout"] == 1  # an explicit per-call timeout wins
+
+
+def test_bound_http_timeout_is_idempotent():
+    session = _RecordingSession()
+    client = SimpleNamespace(_session=session)
+    bound_http_timeout(client, (1.0, 2.0))
+    bound_http_timeout(client, (9.0, 9.0))  # already bounded: keeps the first
+    session.request("GET", "https://example.test")
+    assert session.seen["timeout"] == (1.0, 2.0)
+
+
+def test_bound_http_timeout_skips_clients_without_a_requests_session():
+    assert bound_http_timeout(SimpleNamespace()) is not None
+    magic = MagicMock()
+    assert bound_http_timeout(magic) is magic
+
+
+def test_paper_broker_bounds_every_alpaca_client():
+    """The real SDK clients (built without a network call) must all carry it."""
+    b = PaperBroker(api_key="k", secret_key="s")
+    for client in (b.client, b.stock_data, b.crypto_data):
+        assert client._session._money_http_timeout == HTTP_TIMEOUT
+
+
+def test_fetch_alpaca_daily_bounds_the_data_client(monkeypatch):
+    """A hung bar fetch is unrecoverable — paper-scan only reads the newest bar."""
+    monkeypatch.setenv("ALPACA_API_KEY", "k")
+    monkeypatch.setenv("ALPACA_SECRET_KEY", "s")
+    built: list = []
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            self._session = _RecordingSession()
+            built.append(self)
+
+        def get_stock_bars(self, request):
+            return SimpleNamespace(df=_bars_df())
+
+    monkeypatch.setattr(alpaca_mod, "StockHistoricalDataClient", _Client)
+    fetch_alpaca_daily("AAPL", "stock", since="2026-01-01")
+    assert built[0]._session._money_http_timeout == HTTP_TIMEOUT

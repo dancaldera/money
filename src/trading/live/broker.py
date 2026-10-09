@@ -19,6 +19,8 @@ from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide, QueryOrderStatus, TimeInForce
 from alpaca.trading.requests import GetOrdersRequest, LimitOrderRequest, MarketOrderRequest
 
+from ..net import bound_http_timeout
+
 
 class BrokerError(RuntimeError):
     """Raised for missing credentials or rejected paper orders."""
@@ -59,6 +61,10 @@ class PaperBroker:
         self.client = TradingClient(api_key, secret_key, paper=True)
         self.stock_data = StockHistoricalDataClient(api_key, secret_key)
         self.crypto_data = CryptoHistoricalDataClient(api_key, secret_key)
+        # No Alpaca call may block forever. A hung one once ate a whole job
+        # watchdog and left the book unenforced for six hours (see trading/net.py).
+        for client in (self.client, self.stock_data, self.crypto_data):
+            bound_http_timeout(client)
 
     # --- reads -------------------------------------------------------------
     def account(self) -> dict:
