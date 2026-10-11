@@ -41,6 +41,10 @@ KNOWN = {
     "exp-slots-all-trail6",
     "exp-sma-sep-05",
     "exp-sma-sep-10",
+    "exp-voltarget-50",
+    "exp-voltarget-70",
+    "exp-voltarget-100",
+    "exp-voltarget-150",
 }
 
 

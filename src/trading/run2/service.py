@@ -15,6 +15,7 @@ from ..strategies.base import sma_cross_signal
 from .config import RunConfig
 from .ledger import INKIND_FEE_PREFIX, RunLedger, utc_now
 from .risk import DRAWDOWN_HALT_PREFIX, check_entry, drawdown_pct, halt_action
+from .sizing import entry_notional
 
 
 class RunSafetyError(RuntimeError):
@@ -294,7 +295,7 @@ class Run2Service:
                     "bar_end": bar_end,
                     "signal": signal,
                     "signal_price": str(price),
-                    "notional": str(self.cfg.portfolio.position_notional),
+                    "notional": str(entry_notional(self.cfg, frame["Close"])),
                     "regime_score": int(regime) if regime is not None else None,
                     "negative_news_z": news_z,
                     "action": action,

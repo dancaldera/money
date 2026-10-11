@@ -51,6 +51,8 @@ _FROZEN_BASELINES: dict[str, dict[str, float | int | None]] = {
         "correlation_threshold": 0.80,
         "correlation_matches_allowed": 1,
         "drawdown_halt_pct": 5,
+        "position_vol_target_pct": None,
+        "position_vol_window": 60,
         "stock_gap_limit_pct": 2,
         "crypto_gap_limit_pct": 3,
     },
@@ -79,6 +81,8 @@ _FROZEN_BASELINES: dict[str, dict[str, float | int | None]] = {
         "correlation_threshold": 0.80,
         "correlation_matches_allowed": 1,
         "drawdown_halt_pct": 5,
+        "position_vol_target_pct": None,
+        "position_vol_window": 60,
         "stock_gap_limit_pct": 2,
         "crypto_gap_limit_pct": 3,
     },
@@ -129,6 +133,15 @@ class PortfolioConfig:
     # so a drawdown-only recovery rule can never trigger (measured, see
     # docs/experiments.md).
     halt_recovery_days: int | None = None
+    # Experiment-only risk-based sizing (see run2.sizing): when set, a fresh
+    # entry's notional is scaled by clip(target/realized_vol, 0.25, 4) instead of
+    # taking the flat position_notional, on the same frozen caps. Pinned to None
+    # on every live run — a sizing change is measured through portfolio-backtest
+    # until a human opens a run that carries it.
+    position_vol_target_pct: float | None = None
+    # Daily returns used for that volatility estimate (irrelevant while the knob
+    # above is None, which is every live run).
+    position_vol_window: int = 60
 
 
 @dataclass(frozen=True)
@@ -274,6 +287,11 @@ def _validate(cfg: RunConfig, *, strict: bool = True) -> None:
         value = getattr(cfg.strategy, name)
         if value is not None and value <= 0:
             raise RunConfigError(f"{name} must be positive when set")
+    vol_target = cfg.portfolio.position_vol_target_pct
+    if vol_target is not None and vol_target <= 0:
+        raise RunConfigError("position_vol_target_pct must be positive when set")
+    if cfg.portfolio.position_vol_window < 2:
+        raise RunConfigError("position_vol_window must be at least 2 daily returns")
     if not 0 <= cfg.portfolio.correlation_threshold <= 1:
         raise RunConfigError("correlation_threshold must be in [0, 1]")
     if not cfg.crypto_symbols or not cfg.stock_symbols:
@@ -342,6 +360,14 @@ def _validate(cfg: RunConfig, *, strict: bool = True) -> None:
             baseline["correlation_matches_allowed"],
         ),
         "drawdown_halt_pct": (cfg.portfolio.drawdown_halt_pct, baseline["drawdown_halt_pct"]),
+        "position_vol_target_pct": (
+            cfg.portfolio.position_vol_target_pct,
+            baseline["position_vol_target_pct"],
+        ),
+        "position_vol_window": (
+            cfg.portfolio.position_vol_window,
+            baseline["position_vol_window"],
+        ),
         "stock_gap_limit_pct": (cfg.execution.stock_gap_limit_pct, baseline["stock_gap_limit_pct"]),
         "crypto_gap_limit_pct": (cfg.execution.crypto_gap_limit_pct, baseline["crypto_gap_limit_pct"]),
     }

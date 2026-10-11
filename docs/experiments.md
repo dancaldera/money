@@ -802,11 +802,11 @@ pairwise-correlation environments and worse as correlations rise, and Quest's
 trend-following whitepaper proposes a covariance filter on trend trades for
 exactly the drawdown effect (volatility −27%, drawdown −62% on their book).
 
-**Consequence:** with signals, windows, breadth, pruning, stops, execution *and*
-now the portfolio guards all measured neutral-to-negative, the only measured
-dollar lever left is the **2x size step** ($1,250 slots, $21,250 gross, +21.06%
-vs +10.98% with the recovery rule it ships, at unchanged ret/DD) — a human
-decision, as before.
+**Consequence:** with signals, windows, breadth, pruning, stops, execution, the
+portfolio guards *and* the sizing rule (risk-based slots, measured below) all
+neutral-to-negative on dollars, the only measured dollar lever left is the
+**2x size step** ($1,250 slots, $21,250 gross, +20.37% vs +10.62% with the
+recovery rule it ships, at unchanged ret/DD) — a human decision, as before.
 Adoption of any relaxation would need a new run_id anyway (the frozen check
 pins 0.80 / 1 on `run2` and `run3`), and the measurement does not support it.
 
@@ -824,4 +824,102 @@ done
     exp-slots-all-recover exp-corr-t90 exp-corr-t95 exp-corr-off exp-corr-match2
 .venv/bin/python scripts/analysis_marginal_trades.py --control exp-slots-all-recover \
     exp-corr-t90 exp-corr-off exp-corr-match2
+```
+
+## Measured: risk-based (volatility-targeted) position sizing — the flat slot keeps the dollars (one clock, 2022-01-01 → 2026-10-09)
+
+Every categorical lever (signal, window, breadth, pruning, stops, entry style,
+portfolio guards) had been measured; the one axis left was **how much** each
+slot commits. The frozen rule gives every slot the same `position_notional`,
+whatever the asset: measured over 2022-2026 the mean 60-day annualized
+volatility is **88% for the crypto leg and 49% for the equity leg**, so a $625
+crypto slot carries ~1.8x the risk of a $625 equity slot, and the same split
+shows up in the fee bill (crypto = 86% of fees, `fee bill by leg` above). That
+is the textbook case for volatility targeting, and the prior art is strong:
+Moreira–Muir (*Volatility-Managed Portfolios*, J. Finance 2017) and Harvey,
+Hoyle, Korgaonkar, Rattray, Sargaison & Van Hemert (*The Impact of Volatility
+Targeting*, JPM 2018 — Sharpe 0.40 → 0.48-0.51 on US equities, tail risk
+suppressed across every asset class, but no Sharpe gain on non-risk assets).
+
+New **experiment-only** knobs (both pinned absent on every live run by the
+frozen check, exactly like the stop/entry refinements):
+
+- `position_vol_target_pct: X` — an entry's notional becomes
+  `position_notional * clip(X / realized_vol, 0.25, 4)`, where realized_vol is
+  the annualized standard deviation of the last `position_vol_window` daily
+  returns *up to and including the signal bar* (no lookahead), annualized on 365
+  for both legs so they are comparable. Degenerate input (short, flat or
+  infinite history) returns the flat notional — missing information never sizes
+  an entry *up*; the 4x ceiling means a merely *smooth* trend cannot take an
+  unbounded slot.
+- `position_vol_window: N` (default 60).
+
+The gate (`risk.check_entry`) and the replay price the candidate's own notional,
+and `PendingIntent` carries it, so a scaled entry cannot pass a cap the other
+path would refuse.
+
+**1x basis (17 slots x $625), every row replayed in one sitting on the same
+cache:**
+
+| variant | return | maxDD | ret/DD | trades | win% | expectancy | total | Sharpe | PF | DSR | halts |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| flat slots (control) | +10.62% | -2.79% | 3.81 | 366 | 30.1% | $25.75 | $9,424 | 0.794 | 1.86 | 0.924 | none |
+| target 150% | +8.24% | -4.23% | 1.95 | 218 | 25.2% | $31.08 | $6,775 | 0.677 | 1.45 | 0.739 | none |
+| target 100% | +8.18% | -3.23% | 2.53 | 274 | 27.0% | $26.12 | $7,156 | 0.749 | 1.54 | 0.784 | none |
+| target 50% | +8.16% | -1.97% | **4.14** | 364 | 28.8% | $19.36 | $7,046 | 0.814 | 1.76 | 0.901 | none |
+| target 70% | +7.01% | -2.48% | 2.82 | 326 | 27.6% | $17.88 | $5,828 | 0.742 | 1.51 | 0.778 | none |
+
+The knob does what it says — mean committed notional by leg: flat $625/$625,
+target 50 $464 (crypto) / $718 (stock), 70 $635/$921, 100 $883/$1,208, 150
+$1,244/$1,711. The caps then redistribute the crossings: against the control's
+census (correlation 48, crypto-exposure 13, gross 7, stock-exposure 11), target
+50 moves blocks to `max_stock_exposure` (11 → 23, the bigger equity slots) while
+`max_crypto_exposure` blocks fall 13 → 4; target 150 inverts it
+(stock-exposure 71, crypto-exposure 57, gross 90). **Every variant loses
+dollars, and the highest-return one (target 50) is the one that shrinks the
+book** — the dollars still come from crossings x deployment, not from where the
+risk sits. Target 50's ret/DD of 4.14 is real but valueless here: at 1x the
+drawdown never approaches the 5% latch (no variant halts), so it is buying
+headroom the desk already has.
+
+The marginal-trades lens says the same thing in dollars: target 50 vs control
+(+13 / -15 round trips, mean +$7.77 added = **-0.30x** the control's expectancy,
+-$142 extra fees) → **net -$681**; target 100 (+8 / -104, -0.35x) → **net
+-$5,666**. The crossings the rescaling adds are *below-average*, the same
+signature as the correlation-guard result.
+
+**2x basis — where the halt actually binds (the only case worth considering):**
+
+| variant | return | maxDD | ret/DD | trades | expectancy | DSR | halts |
+|---|---|---|---|---|---|---|---|
+| flat 2x (control) | +20.37% | -5.43% | 3.75 | 366 | $49.03 | 0.913 | 1 (2022-11-09, 20 sessions flat, deepest -5.23%) |
+| 2x, target 50% | +16.35% | -3.94% | **4.15** | 364 | $38.71 | 0.902 | none |
+| 2x, target 70% | +14.06% | -4.96% | 2.83 | 326 | $35.75 | 0.781 | none |
+
+Risk-based sizing is the only variant that takes the 2x step **without tripping
+the latch** — and it costs $4,022 of P&L (net -$1,239 by the marginal lens,
+added trips at 0.64x expectancy) to avoid one 20-session halt. Across both
+bases the exchange rate is consistent: **≈$1.7-2.7k of P&L per 1pp of max
+drawdown**, always paid in dollars, never earned in dollars.
+
+**Verdict: the flat slot stays.** Volatility targeting is a *risk* statement
+(its Sharpe/DD effect is real and reproducible here: 0.794 → 0.814 at 1x, DD
+-0.82pp) and this desk is scored in dollars, which is why it loses: the slot
+budget and the frozen caps convert extra slot size into fewer crossings, so
+re-weighting slots cannot create a crossing the SMA pair did not produce. It
+survives only as a fallback for a human who wants the 2x *dollars* and refuses
+the 2x *halt* — that is $1,250 slots sized by risk (target 50%), +16.35% /
+-3.94%, no halt — a new run_id, never an edit.
+
+```bash
+for m in exp-voltarget-50 exp-voltarget-70 exp-voltarget-100 exp-voltarget-150 \
+         exp-voltarget-2x-50 exp-voltarget-2x-70; do
+  .venv/bin/money portfolio-backtest --run-config config/experiments/$m.yaml
+done
+.venv/bin/python scripts/analysis_experiment_table.py \
+    exp-slots-all-recover exp-voltarget-50 exp-voltarget-70 exp-voltarget-100 exp-voltarget-150
+.venv/bin/python scripts/analysis_marginal_trades.py --control exp-slots-all-recover \
+    exp-voltarget-50 exp-voltarget-100
+.venv/bin/python scripts/analysis_halt_episodes.py --artifact results/exp-voltarget-2x-50/portfolio-backtest \
+    --run-config config/experiments/exp-voltarget-2x-50.yaml
 ```

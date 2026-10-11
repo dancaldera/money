@@ -13,6 +13,7 @@ import pandas as pd
 from ..strategies.base import sma_cross_signal
 from .config import RunConfig
 from .risk import DRAWDOWN_HALT_PREFIX, drawdown_pct, halt_action
+from .sizing import entry_notional
 
 
 @dataclass
@@ -33,6 +34,9 @@ class PendingIntent:
     side: str
     signal_price: float
     created: pd.Timestamp
+    # Notional fixed at signal time (risk-scaled when the experiment knob is set,
+    # otherwise the flat position_notional). Sells carry 0 — they close a position.
+    notional: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -194,7 +198,7 @@ def simulate_portfolio(
                     decision_rows.append({"date": day, "symbol": symbol, "action": "expired_gap"})
                     del pending[symbol]
                     continue
-                notional = min(cfg.portfolio.position_notional, cash)
+                notional = min(intent.notional, cash)
                 rate = _cost_rate(cfg, intent.asset)
                 fee = notional * rate
                 if notional + fee > cash:
@@ -295,14 +299,20 @@ def simulate_portfolio(
                 # suppressed buy carries the guard that stopped it into
                 # decisions.csv. Deployment is capped by whichever of these
                 # fires first, and only the counters can say which one it is.
-                notional = cfg.portfolio.position_notional
+                # The candidate's own notional is used (flat on every live run;
+                # risk-scaled when the experiment knob is set), and pending buys
+                # contribute their own committed notionals rather than a count
+                # times a flat size.
+                notional = entry_notional(cfg, history["Close"])
+                pending_notional = sum(p.notional for p in pending_buys)
+                same_pending_notional = sum(p.notional for p in same_pending)
                 if len(positions) + len(pending_buys) >= cfg.portfolio.max_positions:
                     blocked_by = "max_positions"
-                elif gross + (len(pending_buys) + 1) * notional > cfg.portfolio.max_gross_exposure:
+                elif gross + pending_notional + notional > cfg.portfolio.max_gross_exposure:
                     blocked_by = "max_gross_exposure"
                 elif len(same) + len(same_pending) >= max_count:
                     blocked_by = f"max_{asset_kind}_positions"
-                elif same_gross + (len(same_pending) + 1) * notional > max_exposure:
+                elif same_gross + same_pending_notional + notional > max_exposure:
                     blocked_by = f"max_{asset_kind}_exposure"
                 elif correlation_count > cfg.portfolio.correlation_matches_allowed:
                     blocked_by = f"correlation_cap:{correlation_count}"
@@ -311,7 +321,7 @@ def simulate_portfolio(
                 elif entry_gate is not None and not entry_gate(symbol, asset, day):
                     blocked_by = "entry_gate"
                 if blocked_by is None:
-                    pending[symbol] = PendingIntent(symbol, asset, "buy", price, day)
+                    pending[symbol] = PendingIntent(symbol, asset, "buy", price, day, notional)
                     action = "buy_intent"
             elif signal == "SELL" and symbol in positions and symbol not in pending:
                 pending[symbol] = PendingIntent(symbol, asset, "sell", price, day)
