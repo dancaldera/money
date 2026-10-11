@@ -999,6 +999,21 @@ taking 7-14% more round trips to buy 0.8-1.1pp of drawdown nobody needs at 1x.
 That is the sizing ladder's lesson in a different place: the scarce resource is a
 completed round trip net of fees, not where the stop sits.
 
+External corroboration, since both are the same two facts seen elsewhere:
+
+- Kaminski & Lo (2014), *When do stop-loss rules stop losses?* (Journal of
+  Financial Markets 18: 234-254, <https://doi.org/10.1016/j.finmar.2013.06.004>)
+  derive the "stopping premium": under a random walk a binary stop always
+  *lowers* expected return, and stops only pay when the underlying has positive
+  serial correlation (momentum). Our measured table is that result with dollar
+  amounts: the premium is negative and monotone on the tight side (where the stop
+  is inside the noise) and indistinguishable from zero on the loose side.
+- A public SMA-50/200 × BTC/ETH/SOL sweep with the same exit set (3/5/10/15% and
+  no stop, <https://getregime.com/blog/stop-loss-myth-crypto-trading>) reports
+  the same ordering: no stop best, then 15% > 10% > 5% > 3%, i.e. returns fall
+  monotonically as the stop tightens and the trade count rises — the whipsaw
+  signature we measured, at a coarser cross (50/200 vs our 10/30).
+
 The "off" row needed a code fix to exist at all. `stop_loss_pct: 0` is documented
 as *disabled* (`config/settings.yaml`, the CLI stop monitor's "stop-loss
 disabled", and the shared predicate `trading.live.trader.stop_breached`), but the
