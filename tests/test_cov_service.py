@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from dataclasses import replace
 
 import pytest
 
@@ -231,6 +232,28 @@ def test_check_stops_dry_run_would_stop(tmp_path):
         broker.positions = lambda: [{"symbol": "AAPL", "current_price": 90.0}]
         out = Run2Service(cfg, ledger, broker).check_stops(dry_run=True)
         assert out[0]["action"] == "would_stop"
+        assert broker.closed == []
+    finally:
+        ledger.close()
+
+
+def test_check_stops_disabled_threshold_never_closes_a_position(tmp_path):
+    """``stop_loss_pct`` 0 disables the stop here too (``stop_breached``'s contract).
+
+    Read literally, 0 closes every position that is merely at or below its own
+    entry — the CLI stop monitor prints "stop-loss disabled" for the same value,
+    so the two stop paths would disagree about the same manifest.
+    """
+    base = run2_config()
+    cfg = replace(base, strategy=replace(base.strategy, stop_loss_pct=0))
+    ledger = RunLedger(tmp_path / "ledger.sqlite")
+    ledger.initialize_run(cfg, "paper-account", "2026-08-24T00:00:00+00:00")
+    try:
+        add_fill(ledger, cfg, "AAPL", "stock", "buy", 6.25, 100, "01")
+        broker = FakeBroker()
+        broker.positions = lambda: [{"symbol": "AAPL", "current_price": 90.0}]
+        out = Run2Service(cfg, ledger, broker).check_stops()
+        assert out[0]["action"] == "none"
         assert broker.closed == []
     finally:
         ledger.close()

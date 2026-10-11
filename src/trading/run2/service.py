@@ -408,7 +408,12 @@ class Run2Service:
                 continue
             price = Decimal(str(broker_pos["current_price"]))
             plpc = (price / pos.avg_entry - 1) * 100 if pos.avg_entry else Decimal(0)
-            if plpc > -Decimal(str(self.cfg.strategy.stop_loss_pct)):
+            # A zero (or negative) threshold disables the stop, as in
+            # trading.live.trader.stop_breached and the CLI stop monitor: taken
+            # literally, 0 would close every position that is merely at or below
+            # its own entry.
+            stop_pct = Decimal(str(self.cfg.strategy.stop_loss_pct))
+            if stop_pct <= 0 or plpc > -stop_pct:
                 out.append({"symbol": symbol, "action": "none", "plpc": float(plpc)})
                 continue
             if symbol in in_flight:

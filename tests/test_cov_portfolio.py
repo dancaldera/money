@@ -14,6 +14,7 @@ from trading.run2.portfolio import (
     block_bootstrap_mean_ci,
     deflated_sharpe_probability,
     primary_benchmark,
+    protective_stop,
     simulate_portfolio,
 )
 
@@ -238,6 +239,43 @@ def test_replay_names_the_entry_gate():
     )
     assert set(sim.decisions["blocked_by"].dropna()) == {"entry_gate"}
     assert sim.trades.empty
+
+
+# --- the protective stop: 0 means off, never "stop at the entry price" --------- #
+@pytest.mark.parametrize("pct", [0, 0.0, -5])
+def test_protective_stop_disabled_at_or_below_zero(pct):
+    assert protective_stop(101.0, pct) is None
+
+
+def test_protective_stop_is_fill_derived():
+    assert protective_stop(200.0, 8) == pytest.approx(184.0)
+
+
+def test_replay_with_a_disabled_stop_holds_instead_of_stopping_at_entry():
+    """0 disables the stop in the replay, as in ``stop_breached``/the CLI monitor.
+
+    Taken literally (``entry * (1 - 0/100)``) the stop sits *at* the entry price,
+    so the entry bar's own low closes every position at a fee-paying round trip:
+    the sweep would show a fake cliff between stop 0 and stop 3 that no manifest
+    could have asked for.
+    """
+    base = run2_config()
+    close = [10.0] * 30 + [9.0, 20.0, 17.0] + [30.0] * 40
+    opens = list(close)
+    opens[32] = 20.0  # execution-day open matches the signal close (no gap cap)
+    frame = ohlcv(close, opens=opens)
+    armed = replace(base, strategy=replace(base.strategy, stop_loss_pct=8))
+    off = replace(base, strategy=replace(base.strategy, stop_loss_pct=0))
+
+    stopped = simulate_portfolio(armed, {"AAPL": frame})
+    assert list(stopped.trades["reason"].dropna()) == ["stop"]
+    assert stopped.metrics["completed_trades"] == 1.0
+
+    unstopped = simulate_portfolio(off, {"AAPL": frame})
+    reasons = set(unstopped.trades.get("reason", pd.Series(dtype=str)).fillna(""))
+    assert "stop" not in reasons
+    assert set(unstopped.trades["side"]) == {"buy"}  # entered, never exited
+    assert unstopped.metrics["completed_trades"] == 0.0
 
 
 # --- statistics edge cases ------------------------------------------------------ #

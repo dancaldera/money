@@ -923,3 +923,111 @@ done
 .venv/bin/python scripts/analysis_halt_episodes.py --artifact results/exp-voltarget-2x-50/portfolio-backtest \
     --run-config config/experiments/exp-voltarget-2x-50.yaml
 ```
+
+## Measured: the stop width — the live 8% sits in a flat plateau, and only tightening pays (one clock, 2022-01-01 → 2026-10-10)
+
+`stop_loss_pct: 8` was the last live strategy parameter never swept: every
+manifest in `config/experiments/` carried it unchanged, so the desk had priced
+the stop *refinements* (`stop_breakeven_at_pct`, `stop_trail_pct`) but never the
+width they refine. Ten manifests on the run3 basis, replayed in one sitting on
+one clock: `exp-slots-all-recover` (17 × $625) as the control,
+`exp-stop-{3,5,6,10,12,15,20,30}` and `exp-stop-off` (`stop_loss_pct: 0`).
+
+| stop | return | maxDD | ret/DD | trades | win% | expectancy | total | Sharpe | PF | DSR |
+|---|---|---|---|---|---|---|---|---|---|---|
+| off (0) | +11.60% | -2.91% | 3.99 | 346 | 34.7% | $30.31 | $10,488 | 0.799 | 1.88 | 0.902 |
+| 6% | +11.54% | -2.23% | **5.17** | 377 | 28.4% | $28.02 | $10,562 | 0.891 | 2.10 | 0.971 |
+| 10% | +11.54% | -2.65% | 4.35 | 358 | 31.8% | $28.88 | $10,337 | 0.838 | 1.90 | 0.934 |
+| 30% | +10.79% | -2.97% | 3.64 | 347 | 34.3% | $27.88 | $9,674 | 0.746 | 1.77 | 0.872 |
+| **8% (live)** | **+10.64%** | -2.79% | 3.81 | 366 | 30.1% | $25.75 | $9,424 | 0.795 | 1.86 | 0.925 |
+| 12% | +10.56% | -3.31% | 3.19 | 355 | 32.1% | $26.36 | $9,357 | 0.763 | 1.77 | 0.894 |
+| 20% | +10.43% | -2.77% | 3.76 | 347 | 34.0% | $26.85 | $9,317 | 0.735 | 1.75 | 0.869 |
+| 15% | +10.17% | -3.14% | 3.24 | 352 | 33.0% | $25.46 | $8,961 | 0.726 | 1.71 | 0.867 |
+| 5% | +6.32% | -1.99% | 3.17 | 390 | 25.9% | $13.71 | $5,349 | 0.840 | 1.60 | 0.839 |
+| 3% | +5.37% | -1.73% | 3.10 | 418 | 20.6% | $11.07 | $4,628 | 0.841 | 1.68 | 0.841 |
+
+Two facts, and they point in opposite directions:
+
+- **Tightening is a real loss, and it is monotone.** 3% and 5% give back $4,796
+  and $4,075 of the control's $9,424 (51% / 43%) with 316 / 244 stop exits
+  replacing crossing exits. The marginal lens prices the churn: stop-5 adds 193
+  round trips worth -$5,721 against the 169 it drops (-$591) → **net -$5,184**,
+  the added trips earning -1.15x the desk's expectancy. Every dollar of that is
+  whipsaw: the stop is fill-derived (8% below entry on the live basis) and
+  crypto's daily sigma is ~4-5%, so a 3-5% stop lives inside one day's noise.
+- **Loosening is noise.** Everything from 6% to off lands in +10.2..+11.6%
+  ($9.0-10.6k). The live 8% is the *minimum* of that group, but neither the
+  ordering nor the magnitude is stable: the per-year return diffs against the
+  control are ±0.8pp and flip sign (stop-6: -0.63pp in 2023, +0.40pp 2024,
+  +0.76pp 2025; off: +1.91pp in 2023, -0.56pp 2024, -0.50pp 2025), and the
+  marginal lens' net effect for stop-6 is **+$110** on $4.7k of added and $4.8k
+  of dropped round trips — 1/40th of the churn it took to get there. Stop-10
+  (+$1,765) and stop-off (+$1,114) carry the same signature: the added trips are
+  below-average (-1.1x / -1.7x expectancy) and the *dropped* ones were worse
+  still, so the net is a small residue of two large offsetting flows.
+
+At 1x nothing halts at any width (no `run_halted` blocks in any of the ten
+`decisions.csv`), so the drawdown column is decoration: the 17 × $625 book never
+approaches the 5% latch either way.
+
+**The width does decide the latch at 2x — as a knife edge, not a lever.** The 2x
+step is the human's open decision and the halt binds there, so the same sweep on
+`exp-slots-all-2x-recover` (17 × $1,250):
+
+| stop | return | maxDD | ret/DD | trades | expectancy | DSR | halt episode |
+|---|---|---|---|---|---|---|---|
+| 6% | **+23.09%** | -4.47% | 5.17 | 377 | $56.03 | 0.971 | none |
+| off | +22.30% | -5.81% | 3.84 | 346 | $58.01 | 0.889 | 2022-11-09, 20 flat, deepest -5.81% |
+| 10% | +21.95% | -5.30% | 4.14 | 356 | $54.90 | 0.926 | 2022-12-19, 20 flat, -5.30% |
+| 12% | +21.31% | -6.42% | 3.32 | 350 | $54.01 | 0.899 | 2022-09-23, 20 flat, -5.11% |
+| **8% (control)** | +20.37% | -5.43% | 3.75 | 366 | $49.03 | 0.913 | 2022-11-09, 20 flat, -5.23% |
+| 5% | +12.63% | -3.98% | 3.17 | 390 | $27.43 | 0.840 | none |
+
+Read the halt column against the 1x table before believing it: 5% and 6% dodge
+the latch while 8%, 10%, 12% and off all trip it on a November-December 2022
+episode, and that staggering is decided by the ~0.5-1pp of drawdown difference
+the 1x year-by-year table just called noise. Stop-6's +23.09% is the best number
+measured on the 2x basis — and it is the same path-noise viewed through the
+latch, not a rescue. The 2x step is not a free choice of "which stop dodges the
+halt".
+
+**Verdict: the live 8% stays.** The sweep closes the last unmeasured live
+parameter with the answer every other lever got: on the loose side (6% → off) the
+width is inside the noise plateau, and the only measurable effect is the one you
+cannot want — tightening below 6% spends $4-5k of P&L (43-51% of it) on whipsaw,
+taking 7-14% more round trips to buy 0.8-1.1pp of drawdown nobody needs at 1x.
+That is the sizing ladder's lesson in a different place: the scarce resource is a
+completed round trip net of fees, not where the stop sits.
+
+The "off" row needed a code fix to exist at all. `stop_loss_pct: 0` is documented
+as *disabled* (`config/settings.yaml`, the CLI stop monitor's "stop-loss
+disabled", and the shared predicate `trading.live.trader.stop_breached`), but the
+replay took 0 literally (`entry × (1 − 0/100)`) and parked the stop *at* the
+entry price, so the entry bar's own low closed every position at a fee-paying
+round trip — a fake cliff between 0 and 3% that no manifest could have intended.
+`protective_stop()` in `src/trading/run2/portfolio.py` now returns `None` for a
+zero/negative threshold (the `stop_breached` contract), `run2.service.check_stops`
+carries the same guard, and `tests/test_cov_portfolio.py` /
+`tests/test_cov_service.py` pin both. Positive widths replay bit-identically
+before and after the fix (verified by diffing `summary.json` for the control and
+`exp-stop-2x-6`), so no number in any earlier section moved.
+
+```bash
+for m in exp-stop-3 exp-stop-5 exp-stop-6 exp-stop-10 exp-stop-12 exp-stop-15 \
+         exp-stop-20 exp-stop-30 exp-stop-off; do
+  .venv/bin/money portfolio-backtest --run-config config/experiments/$m.yaml
+done
+for m in exp-stop-2x-5 exp-stop-2x-6 exp-stop-2x-10 exp-stop-2x-12 exp-stop-2x-off; do
+  .venv/bin/money portfolio-backtest --run-config config/experiments/$m.yaml
+done
+.venv/bin/python scripts/analysis_experiment_table.py exp-slots-all-recover \
+    exp-stop-off exp-stop-3 exp-stop-5 exp-stop-6 exp-stop-10 exp-stop-12 \
+    exp-stop-15 exp-stop-20 exp-stop-30
+.venv/bin/python scripts/analysis_marginal_trades.py --control exp-slots-all-recover \
+    exp-stop-off exp-stop-6 exp-stop-10 exp-stop-5 exp-stop-30
+for m in exp-slots-all-2x-recover exp-stop-2x-6 exp-stop-2x-10 exp-stop-2x-12 \
+         exp-stop-2x-off exp-stop-2x-5; do
+  .venv/bin/python scripts/analysis_halt_episodes.py --artifact results/$m/portfolio-backtest \
+      --run-config config/experiments/$m.yaml
+done
+```

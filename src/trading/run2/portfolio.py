@@ -16,13 +16,28 @@ from .risk import DRAWDOWN_HALT_PREFIX, drawdown_pct, halt_action
 from .sizing import entry_notional
 
 
+def protective_stop(entry_price: float, stop_loss_pct: float) -> float | None:
+    """Fill-derived protective stop level, or ``None`` when the stop is disabled.
+
+    A ``stop_loss_pct`` of 0 (or below) disables the stop — the same contract as
+    ``trading.live.trader.stop_breached`` and the CLI stop monitor, both of which
+    treat a falsey/negative threshold as "off". The replay must agree: taking 0
+    literally (``entry * (1 - 0/100)``) parks the stop *at* the entry price and
+    stops every position on its entry bar at a fee-paying round trip, which is a
+    replay-only artifact no manifest could intend.
+    """
+    if not stop_loss_pct or stop_loss_pct <= 0:
+        return None
+    return entry_price * (1 - stop_loss_pct / 100)
+
+
 @dataclass
 class SimPosition:
     symbol: str
     asset: str
     qty: float
     entry: float
-    stop: float
+    stop: float | None  # None = no protective stop (manifest stop_loss_pct 0)
     entry_fee: float
     peak: float = 0.0  # highest close since entry (drives experiment trail/breakeven stops)
 
@@ -208,7 +223,7 @@ def simulate_portfolio(
                 cash -= notional + fee
                 positions[symbol] = SimPosition(
                     symbol, intent.asset, qty, open_price,
-                    open_price * (1 - cfg.strategy.stop_loss_pct / 100),
+                    protective_stop(open_price, cfg.strategy.stop_loss_pct),
                     fee,
                 )
                 trade_rows.append({"date": day, "symbol": symbol, "asset": intent.asset, "side": "buy", "qty": qty, "price": open_price, "fee": fee, "realized_pl": 0.0})
@@ -222,7 +237,8 @@ def simulate_portfolio(
                     trade_rows.append({"date": day, "symbol": symbol, "asset": pos.asset, "side": "sell", "qty": pos.qty, "price": open_price, "fee": fee, "realized_pl": realized})
             del pending[symbol]
 
-        # Intraday stop approximation: gap at open, otherwise frozen 8% level.
+        # Intraday stop approximation: gap at open, otherwise the fill-derived
+        # stop level (None = the manifest disabled the stop, stop_loss_pct 0).
         for symbol in sorted(list(positions)):
             frame = indexed.get(symbol)
             if frame is None or day not in frame.index:
@@ -231,14 +247,15 @@ def simulate_portfolio(
             if isinstance(row, pd.DataFrame):
                 row = row.iloc[0]
             pos = positions[symbol]
-            if float(row["Low"]) <= pos.stop:
-                exit_price = min(float(row["Open"]), pos.stop)
-                gross = pos.qty * exit_price
-                fee = gross * _cost_rate(cfg, pos.asset)
-                cash += gross - fee
-                realized = (exit_price - pos.entry) * pos.qty - pos.entry_fee - fee
-                trade_rows.append({"date": day, "symbol": symbol, "asset": pos.asset, "side": "sell", "qty": pos.qty, "price": exit_price, "fee": fee, "realized_pl": realized, "reason": "stop"})
-                del positions[symbol]
+            if pos.stop is None or float(row["Low"]) > pos.stop:
+                continue
+            exit_price = min(float(row["Open"]), pos.stop)
+            gross = pos.qty * exit_price
+            fee = gross * _cost_rate(cfg, pos.asset)
+            cash += gross - fee
+            realized = (exit_price - pos.entry) * pos.qty - pos.entry_fee - fee
+            trade_rows.append({"date": day, "symbol": symbol, "asset": pos.asset, "side": "sell", "qty": pos.qty, "price": exit_price, "fee": fee, "realized_pl": realized, "reason": "stop"})
+            del positions[symbol]
 
         # Experiment-only stop refinements (both knobs None on every live run):
         # track each position's highest close and optionally raise the stop to
@@ -254,12 +271,16 @@ def simulate_portfolio(
                     pos = positions[symbol]
                     close = float(row["Close"])
                     pos.peak = max(pos.peak or pos.entry, close)
+                    # A disabled stop (None) is "below everything": a refinement
+                    # knob that sets a level simply installs one.
+                    floor = pos.stop if pos.stop is not None else float("-inf")
                     be = cfg.strategy.stop_breakeven_at_pct
                     if be is not None and close >= pos.entry * (1 + be / 100):
-                        pos.stop = max(pos.stop, pos.entry)
+                        pos.stop = max(floor, pos.entry)
+                        floor = pos.stop
                     trail = cfg.strategy.stop_trail_pct
                     if trail is not None:
-                        pos.stop = max(pos.stop, pos.peak * (1 - trail / 100))
+                        pos.stop = max(floor, pos.peak * (1 - trail / 100))
 
         # Generate fresh signals only after today's close.
         for symbol, asset in sorted(cfg.symbols, key=lambda x: x[0]):
