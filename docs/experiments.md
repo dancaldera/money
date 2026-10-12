@@ -1046,3 +1046,84 @@ for m in exp-slots-all-2x-recover exp-stop-2x-6 exp-stop-2x-10 exp-stop-2x-12 \
       --run-config config/experiments/$m.yaml
 done
 ```
+
+## Measured: re-entry after a stop — the frozen fresh-cross rule earns its keep (one clock, 2022-01-01 → 2026-10-11)
+
+Every other live parameter had been swept; one live *rule* had not. The frozen
+manifest carries `require_fresh_cross_after_stop: true` (and the loader refuses
+any manifest that sets it false), so after a protective stop a symbol is only
+ever re-entered on a **fresh up-cross** — an intact up-trend with no new cross is
+simply sat out (live instance: `LINK/USD` stopped 2026-10-08 at 12.14, +9.8% by
+2026-10-12, still out). That looked like a leak, so it was priced.
+
+A sixth experiment-only knob, `stop_reentry_bars: N | None`, was added for it
+(pinned to `None` on every live run by the same frozen check as the other five).
+When set, a symbol stopped out may be re-entered on any bar within the next N of
+its *own* sessions while the fast SMA is still above the slow SMA
+(`trading.strategies.base.sma_trend_up`), priced exactly like a cross entry —
+same next-bar open, same gap cap, same fill-derived 8% stop, every guard
+unchanged, and never on the stop's own bar (one full session must pass first, so
+no same-bar re-entry: audit shows 0 same-bar re-entries in every variant).
+
+| manifest | return | maxDD | ret/DD | trades | win% | expectancy | total | Sharpe | PF | DSR |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `exp-slots-all-recover` (frozen rule) | **+10.72%** | **-2.79%** | **3.84** | 366 | 30.1% | **$25.75** | **$9,424** | **0.801** | **1.86** | **0.928** |
+| `exp-reentry-5` (≤5 sessions) | +9.90% | -2.72% | 3.64 | 510 | 30.6% | $16.78 | $8,558 | 0.690 | 1.58 | 0.837 |
+| `exp-reentry-10` (≤10 sessions) | +9.81% | -2.80% | 3.50 | 512 | 30.5% | $16.54 | $8,467 | 0.684 | 1.57 | 0.833 |
+| `exp-reentry-252` (trend-break) | +9.18% | -2.99% | 3.07 | 570 | 31.2% | $13.46 | $7,671 | 0.621 | 1.48 | 0.772 |
+
+The marginal lens (`analysis_marginal_trades.py --control exp-slots-all-recover`)
+says why: forcing the re-entry adds round trips that lose money on average.
+
+| variant | added / dropped entries | added round trips | added mean | fees | net effect |
+|---|---|---|---|---|---|
+| `exp-reentry-5` | +157 / -11 | +155 | $-8.64 (-0.34x control) | $369.58 | **-$1,235.54** |
+| `exp-reentry-10` | +160 / -12 | +158 | $-9.39 (-0.36x) | $375.62 | **-$1,332.56** |
+| `exp-reentry-252` | +228 / -22 | +219 | $-11.33 (-0.44x) | $517.34 | **-$2,302.36** |
+
+Findings:
+
+1. **The trades the fresh-cross rule sits out are below-average, and they are
+   not free.** 159/162/234 re-entry intents (76% of them crypto) produce added
+   round trips at -0.34x to -0.44x the desk's $25.75 expectancy, plus $370-517 of
+   extra fees: a net -$1.2k to -$2.3k of P&L on a desk whose whole control run is
+   +$9.4k. This is the same lesson as the whipsaw gate and the correlation guard —
+   the marginal crossing is average, but a *forced* entry (buying the dip that
+   just stopped you out) is worse than average.
+2. **Re-entry does not buy drawdown.** Only the tightest window improves maxDD at
+   all (-2.72% vs -2.79%) and it costs the most return per unit of it; the
+   trend-break variant is worse on both (-2.99%). Sharpe, PF and DSR fall
+   monotonically with the window (0.801/1.86/0.928 → 0.621/1.48/0.772), so the
+   loss is not a path accident.
+3. **The rule compounds: more stops, not fewer.** The control books 176 stop
+   exits over 4.7y; the variants book 229/231/254, because every re-entry is a
+   fresh position with a fresh fill-derived stop. Extra entries → extra stops →
+   extra fees, which is exactly the loop the crypto leg is most exposed to
+   (crypto contributes -$1,222 of the -$1,339 at N=5 and -$2,452 of -$2,481 at
+   N=252, matching its 86% share of the fee bill).
+4. **External analogues agree.** Lo & Remorov, *Journal of Financial Markets* 34
+   (2017) 1-15, make the re-entry policy part of the stop-loss definition and
+   show tight stops underperform buy-and-hold from excessive trading costs, with
+   quick re-investment helping *only* for tight triggers; on SMA 50/200 crypto
+   (2023-2026, 302k candles) a 3% stop goes from 47 to 412 trades and from +586%
+   to -89% on SOL through the same "stop-trigger-re-enter" fee drag
+   (getregime.com); and the same-bar re-entry that makes such results look good
+   in a backtester is a look-ahead artifact, skipping one full bar is the fix
+   (algograde.com) — which this knob already does.
+
+**Consequence:** leave `require_fresh_cross_after_stop: true` alone. The live
+gate is validated, not a leak: at 1x the desk already owns its edge in the
+*crossings*, and every attempt to buy outside a crossing — a wider stop, a
+breakeven stop, a passive entry, a vol-target, and now a post-stop re-entry —
+has measured negative. Nothing here is adoptable by editing run3 (the knob is
+pinned absent); it closes the last live rule that had never been priced.
+
+```bash
+for m in exp-slots-all-recover exp-reentry-5 exp-reentry-10 exp-reentry-252; do
+  .venv/bin/money portfolio-backtest --run-config config/experiments/$m.yaml
+done
+.venv/bin/python scripts/analysis_experiment_table.py exp-slots-all-recover \
+    exp-reentry-5 exp-reentry-10 exp-reentry-252
+.venv/bin/python scripts/analysis_marginal_trades.py --control exp-slots-all-recover \
+    exp-reentry-5 exp-reentry-10 exp-reentry-252
+```

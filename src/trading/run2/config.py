@@ -40,6 +40,7 @@ _FROZEN_BASELINES: dict[str, dict[str, float | int | None]] = {
         "stop_breakeven_at_pct": None,
         "stop_trail_pct": None,
         "entry_min_separation_pct": None,
+        "stop_reentry_bars": None,
         "position_notional": 625,
         "max_positions": 8,
         "max_gross_exposure": 5_000,
@@ -70,6 +71,7 @@ _FROZEN_BASELINES: dict[str, dict[str, float | int | None]] = {
         "stop_breakeven_at_pct": None,
         "stop_trail_pct": None,
         "entry_min_separation_pct": None,
+        "stop_reentry_bars": None,
         "position_notional": 625,
         "max_positions": 17,
         "max_gross_exposure": 10_625,
@@ -108,6 +110,15 @@ class StrategyConfig:
     # on every live run — measured 2026-10-04 on the run3 basis, it loses dollars
     # (see docs/experiments.md), so it may only be replayed.
     entry_min_separation_pct: float | None = None
+    # Experiment-only re-entry window after a protective stop. ``None`` = the
+    # frozen live rule: a stopped symbol is only re-entered on a *fresh* up-cross
+    # (``require_fresh_cross_after_stop: true``). When set to N, a symbol stopped
+    # out may be re-entered on any bar within the next N of its own sessions
+    # while the trend is still up (fast SMA above slow SMA) — priced exactly like
+    # a cross entry, subject to every guard. Pinned to None on every live run, so
+    # the alternative can only be measured through portfolio-backtest until a
+    # human opens a run that carries it.
+    stop_reentry_bars: int | None = None
 
 
 @dataclass(frozen=True)
@@ -283,7 +294,7 @@ def _validate(cfg: RunConfig, *, strict: bool = True) -> None:
     recovery_days = cfg.portfolio.halt_recovery_days
     if recovery_days is not None and recovery_days <= 0:
         raise RunConfigError("halt_recovery_days must be positive")
-    for name in ("stop_breakeven_at_pct", "stop_trail_pct", "entry_min_separation_pct"):
+    for name in ("stop_breakeven_at_pct", "stop_trail_pct", "entry_min_separation_pct", "stop_reentry_bars"):
         value = getattr(cfg.strategy, name)
         if value is not None and value <= 0:
             raise RunConfigError(f"{name} must be positive when set")
@@ -345,6 +356,10 @@ def _validate(cfg: RunConfig, *, strict: bool = True) -> None:
         "entry_min_separation_pct": (
             cfg.strategy.entry_min_separation_pct,
             baseline["entry_min_separation_pct"],
+        ),
+        "stop_reentry_bars": (
+            cfg.strategy.stop_reentry_bars,
+            baseline["stop_reentry_bars"],
         ),
         "position_notional": (cfg.portfolio.position_notional, baseline["position_notional"]),
         "max_positions": (cfg.portfolio.max_positions, baseline["max_positions"]),

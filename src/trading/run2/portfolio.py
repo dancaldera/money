@@ -10,7 +10,7 @@ from typing import Callable, Mapping
 import numpy as np
 import pandas as pd
 
-from ..strategies.base import sma_cross_signal
+from ..strategies.base import sma_cross_signal, sma_trend_up
 from .config import RunConfig
 from .risk import DRAWDOWN_HALT_PREFIX, drawdown_pct, halt_action
 from .sizing import entry_notional
@@ -194,6 +194,8 @@ def simulate_portfolio(
     # Non-None while the run is halted by drawdown; exits still execute, entries do not.
     halted_reason: str | None = None
     halted_day: pd.Timestamp | None = None
+    # day each symbol was last stopped out of (experiment-only re-entry window).
+    stopped_on: dict[str, pd.Timestamp] = {}
 
     indexed = {s: f.assign(_day=pd.to_datetime(f.index).normalize()).set_index("_day", drop=True) for s, f in clean.items()}
     for day in dates:
@@ -256,6 +258,9 @@ def simulate_portfolio(
             realized = (exit_price - pos.entry) * pos.qty - pos.entry_fee - fee
             trade_rows.append({"date": day, "symbol": symbol, "asset": pos.asset, "side": "sell", "qty": pos.qty, "price": exit_price, "fee": fee, "realized_pl": realized, "reason": "stop"})
             del positions[symbol]
+            # Arms the experiment-only re-entry window (inert while the knob is
+            # None, which is every live run) — and never a same-bar re-entry.
+            stopped_on[symbol] = day
 
         # Experiment-only stop refinements (both knobs None on every live run):
         # track each position's highest close and optionally raise the stop to
@@ -298,7 +303,22 @@ def simulate_portfolio(
             last_prices[symbol] = price
             action = "none"
             blocked_by: str | None = None
-            if signal == "BUY" and symbol not in positions and symbol not in pending:
+            # Experiment-only re-entry window (None on every live run): after a
+            # protective stop, the frozen gate waits for a *fresh* up-cross, so an
+            # intact up-trend is sat out. With the knob set, a symbol stopped out
+            # within the last N of its own sessions is an entry candidate again
+            # while the fast SMA is still above the slow SMA — every guard below
+            # still applies, and it is priced exactly like a cross entry.
+            reentry = False
+            if cfg.strategy.stop_reentry_bars is not None and signal != "BUY":
+                stop_day = stopped_on.get(symbol)
+                if stop_day is not None:
+                    since = int(((frame.index > stop_day) & (frame.index <= day)).sum())
+                    if 0 < since <= cfg.strategy.stop_reentry_bars and sma_trend_up(
+                        history["Close"], cfg.strategy.fast_window, cfg.strategy.slow_window
+                    ):
+                        reentry = True
+            if (signal == "BUY" or reentry) and symbol not in positions and symbol not in pending:
                 same = [p for p in positions.values() if p.asset == asset]
                 pending_buys = [p for p in pending.values() if p.side == "buy"]
                 same_pending = [p for p in pending_buys if p.asset == asset]

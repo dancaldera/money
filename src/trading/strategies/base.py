@@ -41,6 +41,25 @@ def sma_cross_signal(values, fast: int = 10, slow: int = 30, entry_min_separatio
     return "BUY" if up else "SELL" if down else "HOLD"
 
 
+def sma_trend_up(values, fast: int = 10, slow: int = 30) -> bool:
+    """True when the fast SMA sits *above* the slow SMA on the newest closed bar.
+
+    This is the trend *state* (not the crossing *event*) that a re-entry rule
+    needs: after a protective stop the desk's frozen entry gate demands a fresh
+    up-cross, so an intact up-trend with no new cross is simply sat out. Purely
+    descriptive: it never says BUY, and nothing in the live path calls it — the
+    experiment-only ``stop_reentry_bars`` knob is the only consumer.
+    """
+    close = pd.Series(values, dtype="float64")
+    if len(close) < slow + 1:
+        return False
+    fast_sma = close.rolling(fast).mean().iloc[-1]
+    slow_sma = close.rolling(slow).mean().iloc[-1]
+    if pd.isna(fast_sma) or pd.isna(slow_sma):
+        return False
+    return bool(fast_sma > slow_sma)
+
+
 def rsi(values, period: int = 14) -> np.ndarray:
     """Relative Strength Index using Wilder's smoothing.
 

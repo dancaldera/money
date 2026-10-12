@@ -278,6 +278,48 @@ def test_replay_with_a_disabled_stop_holds_instead_of_stopping_at_entry():
     assert unstopped.metrics["completed_trades"] == 0.0
 
 
+# --- experiment-only re-entry window after a stop ------------------------------- #
+def _stopped_then_flat(opens=None):
+    """Cross up on bar 31, enter on bar 32 at 20.00, get stopped on bar 33 at
+    18.00, then drift flat at 19.00 — an intact up-trend with no new cross."""
+    close = [10.0] * 30 + [9.0, 20.0, 20.0, 18.0] + [19.0] * 6
+    return ohlcv(close, opens=opens)
+
+
+def test_simulator_reenters_after_a_stop_while_the_trend_holds():
+    base = run2_config()
+    cfg = replace(base, strategy=replace(base.strategy, stop_reentry_bars=5))
+    sim = simulate_portfolio(cfg, {"AAPL": _stopped_then_flat()})
+    buys = sim.trades[sim.trades["side"] == "buy"]
+    assert len(buys) == 2  # the cross entry, then the in-window re-entry
+    assert list(sim.trades[sim.trades["side"] == "sell"]["reason"]) == ["stop"]
+    # Every other fixture path is unchanged: the frozen rule still sits out.
+    frozen = simulate_portfolio(base, {"AAPL": _stopped_then_flat()})
+    assert len(frozen.trades[frozen.trades["side"] == "buy"]) == 1
+
+
+def test_simulator_reentry_window_expires_and_respects_the_gap_cap():
+    base = run2_config()
+    cfg = replace(base, strategy=replace(base.strategy, stop_reentry_bars=1))
+    opens = list(_stopped_then_flat()["Open"])
+    opens[35] = 20.5  # next open gaps 7.9% over the 19.00 re-entry signal close
+    sim = simulate_portfolio(cfg, {"AAPL": _stopped_then_flat(opens=opens)})
+    assert list(sim.decisions["action"]).count("expired_gap") == 1
+    assert len(sim.trades[sim.trades["side"] == "buy"]) == 1  # window then expired
+
+
+def test_simulator_reentry_needs_a_stop_to_arm():
+    base = run2_config()
+    # Same fixture, but the manifest disables the stop: nothing exits, so nothing
+    # arms the window and the knob stays inert.
+    cfg = replace(base, strategy=replace(base.strategy, stop_loss_pct=0, stop_reentry_bars=5))
+    sim = simulate_portfolio(cfg, {"AAPL": _stopped_then_flat()})
+    assert len(sim.trades[sim.trades["side"] == "buy"]) == 1
+    assert set(sim.trades["side"]) == {"buy"}
+    reasons = set(sim.trades["reason"].dropna()) if "reason" in sim.trades else set()
+    assert "stop" not in reasons
+
+
 # --- statistics edge cases ------------------------------------------------------ #
 def test_bootstrap_ci_needs_two_observations():
     low, high = block_bootstrap_mean_ci(pd.Series([1.0]))
