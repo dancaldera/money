@@ -27,6 +27,51 @@ heartbeat() {
   date +%s > "$1" 2>/dev/null || true
 }
 
+# TRANSIENT_RE: the TRANSPORT failures a retry can fix — a DNS blip, a reset
+# connection, or one of the bounded HTTP timeouts (trading/net.py, 5s connect /
+# 20s read) that turns a hang into one of these messages. Measured in this desk:
+# ConnectionResetError(54) and NameResolutionError (stop ticks, 2026-10-08), a
+# full DNS outage at the 18:35 slot (2026-09-29), and a connect timeout. A
+# DETERMINISTIC failure — BrokerError, RunSafetyError, a frozen-manifest
+# mismatch, a rejected duplicate client_order_id — is deliberately not in the
+# pattern: retrying it only delays the alert. One definition, shared by every
+# wrapper, so the pattern cannot drift between them.
+TRANSIENT_RE='ConnectionError|NameResolutionError|ConnectionResetError|Max retries exceeded|Connection reset by peer|timed out|Temporary failure in name resolution'
+
+# run_step <max_attempts> <sleep_s> <no_retry_regex> <cmd...>: run one step of a
+# scheduled wrapper, capturing combined output in STEP_OUT, its exit code in
+# STEP_RC and the number of attempts used in STEP_ATTEMPTS.
+#
+# Retries only when the failure matches TRANSIENT_RE, never beyond max_attempts,
+# and NEVER when the output matched no_retry_regex (pass "" for none): that
+# pattern marks a step that already acted, where a re-run could double the
+# action. Callers pass the "an order was already submitted" pattern. Every retry
+# is announced, so the log shows what the schedule absorbed.
+run_step() {
+  local max="$1" sleep_s="$2" no_retry="$3"
+  shift 3
+  local attempt=1 out rc
+  while :; do
+    out="$("$@" 2>&1)"
+    rc=$?
+    [ "$rc" -eq 0 ] && break
+    if [ -n "$no_retry" ] && printf '%s\n' "$out" | grep -qE "$no_retry"; then
+      echo "attempt $attempt failed after acting — not retrying"
+      break
+    fi
+    if [ "$attempt" -ge "$max" ] || ! printf '%s\n' "$out" | grep -qE "$TRANSIENT_RE"; then
+      break
+    fi
+    echo "transient transport failure on attempt $attempt/$max — retrying in ${sleep_s}s"
+    attempt=$((attempt + 1))
+    [ "$sleep_s" -gt 0 ] && sleep "$sleep_s"
+  done
+  STEP_OUT="$out"
+  STEP_RC="$rc"
+  STEP_ATTEMPTS="$attempt"
+  return 0
+}
+
 # record_scan_success <dry_run 0|1> <success_heartbeat> <preview_heartbeat>:
 # record a finished daily scan. A DRY_RUN preview must NEVER advance the success
 # heartbeat: the 22:00 catch-up guard runs the desk only when today's success

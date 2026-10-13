@@ -113,6 +113,29 @@ whose stop order is already `submitted`-and-unreconciled
 (`reason=close_in_flight`), so a failure landing *after* the close was accepted is a
 no-op on the next attempt.
 
+The two **once-a-day** money slots carry the same contract now — they are where a
+lost minute is unrecoverable. `daily_paper_run.sh` retries each of its four steps
+(context, closed-bar scan, crypto execution, reconcile) and
+`execute_stock_intents.sh` retries its execution step, both through `run_step` in
+`scripts/_lib.sh` (3 attempts x 45s, transient transport only). Both used to swallow
+the CLI's rc (a group block ends on `heartbeat`/`|| true`), so the silent cron
+wrappers' `rc -ne 0` branches were dead code there too; both now `exit "$rc"`.
+
+Why it matters more here than elsewhere: `paper-scan` only evaluates the newest
+closed bar, so a `daily_paper_run.sh` that the network killed is a permanent signal
+loss (2026-09-29: a full DNS outage — Alpaca and the CBOE VIX both unresolvable —
+killed the 18:35 slot and only the 22:45 catch-up saved the bar), and **nothing but
+the 08:31 slot ever executes stock intents** (the 22:00 catch-up runs the daily
+wrapper, which executes crypto only), so a blip there leaves the day's intents
+pending into the frozen 2% gap cap. Neither retry can double an action: the
+execution step is not retried once its output already shows a submitted order (the
+`client_order_id` derives from the decision_id, so a re-post could only be rejected),
+and the stop monitor keeps its own `action=stopped` brake. The pattern itself is
+defined once (`TRANSIENT_RE` in `_lib.sh`) so the three schedules cannot drift on
+what counts as retryable. Seams (opt-in): `MONEY_BIN`, `MONEY_PY`, `SCAN_LOG`,
+`SCAN_RETRY_SLEEP`, `PAPERSCAN_HEARTBEAT`, `CONTEXT_HEARTBEAT`, `STOCK_LOG`,
+`STOCK_RETRY_SLEEP`, `STOCKEXEC_HEARTBEAT`.
+
 Inspect: `hermes cron list` / `cronjob_manage(action='list')`. Trading jobs
 save locally (`deliver: local`). The 09:00 buy/hold/sell briefing posts into
 the Hermes chat it was created from (continuable).

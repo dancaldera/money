@@ -148,7 +148,11 @@ Leave the `EMAIL_*` variables unset and everything else works exactly as before
 > instructions below remain for other machines.
 
 Three schedules drive the paper account (all wrappers append to logs under
-`results/` and send a desktop notification on failure):
+`results/` and send a desktop notification on failure). Each retries a **transient
+transport** failure in place (3 attempts, `run_step` in `scripts/_lib.sh`) and exits
+with the CLI's code, because a lost daily slot is permanent: `paper-scan` only ever
+evaluates the newest closed bar, and nothing but the stock slot executes stock
+intents:
 
 - **Context, closed-bar scan, and crypto execution** —
   `scripts/daily_paper_run.sh` at **00:05 UTC**.

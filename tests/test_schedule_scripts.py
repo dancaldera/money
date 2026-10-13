@@ -556,3 +556,210 @@ def test_dry_run_preview_never_advances_the_stop_heartbeat(tmp_path):
     env, _, hb = _stop_env(tmp_path)
     assert _run_stop(STOP_WRAPPER, env).returncode == 0 and hb.exists()
 
+
+# --- the once-a-day slots: retry a transient transport failure, and never hide
+# one that a retry cannot fix
+#
+# A missed daily run is a *permanent* loss (paper-scan only evaluates the newest
+# closed bar, so that bar's fresh crosses are never seen again), and the stock
+# executor has no second line at all — nothing else executes stock intents, and a
+# pending intent is exactly what the frozen 2% gap cap expires. Both wrappers used
+# to swallow the CLI's exit code (the group block ends on `heartbeat`/`|| true`),
+# so the silent cron wrappers' `rc -ne 0` alert branches were dead code and a
+# failed slot was invisible everywhere the operator looks — the same defect the
+# stop monitor carried until 2026-10-08. Pinned here: the retry is bounded, it
+# never re-runs a step that already submitted an order, and the rc reaches the
+# caller.
+
+DAILY = ROOT / "scripts" / "daily_paper_run.sh"
+STOCK_WRAPPER = ROOT / "scripts" / "execute_stock_intents.sh"
+SILENT_STOCK = ROOT / "scripts" / "cron_silent_stockexec.sh"
+LIB = ROOT / "scripts" / "_lib.sh"
+
+# A stub `money` CLI: calls whose argv matches STUB_FAIL_KEY fail while fewer
+# than STUB_FAILS such calls have happened (printing STUB_ERR, which is what the
+# retry regex reads), then every call succeeds.
+_DAY_STUB = """#!/bin/bash
+echo "$@" >> "$STUB_CALLS"
+key="${STUB_FAIL_KEY:-paper-scan}"
+case "$*" in
+  *"$key"*) ;;
+  *) echo "  ok: $*"; exit 0 ;;
+esac
+n="$(grep -c -- "$key" "$STUB_CALLS")"
+if [ "$n" -lt "${STUB_FAILS:-0}" ]; then
+  printf '%s\\\\n' "${STUB_ERR:-NameResolutionError: Max retries exceeded}"
+  exit 1
+fi
+echo "  ok: $*"
+exit 0
+"""
+
+
+def _day_env(tmp_path, **over):
+    stub = tmp_path / "money_stub"
+    stub.write_text(_DAY_STUB)
+    stub.chmod(0o755)
+    py = tmp_path / "python_stub"
+    py.write_text("#!/bin/bash\nexit 1\n")  # no [research] extra in the test
+    py.chmod(0o755)
+    calls = tmp_path / "calls"
+    quiet = tmp_path / "bin"
+    quiet.mkdir(exist_ok=True)
+    for tool in ("osascript", "notify-send"):
+        (quiet / tool).write_text("#!/bin/bash\nexit 0\n")
+        (quiet / tool).chmod(0o755)
+    env = dict(
+        os.environ,
+        PATH=f"{quiet}:{os.environ.get('PATH', '')}",
+        MONEY_BIN=str(stub),
+        MONEY_PY=str(py),
+        STUB_CALLS=str(calls),
+        SCAN_LOG=str(tmp_path / "scan.log"),
+        STOCK_LOG=str(tmp_path / "stock.log"),
+        PAPERSCAN_HEARTBEAT=str(tmp_path / "scan_hb"),
+        PAPERSCAN_PREVIEW_HEARTBEAT=str(tmp_path / "scan_preview"),
+        CONTEXT_HEARTBEAT=str(tmp_path / "context_hb"),
+        STOCKEXEC_HEARTBEAT=str(tmp_path / "stock_hb"),
+        SCAN_RETRY_SLEEP="0",
+        STOCK_RETRY_SLEEP="0",
+    )
+    env.update(over)
+    return env, calls
+
+
+def _calls(calls: Path, key: str) -> int:
+    """Calls whose SUBCOMMAND is `key` — the stub logs the argv, so the line
+    starts with it (an alert title that mentions another subcommand must not
+    count)."""
+    return sum(1 for line in calls.read_text().splitlines() if line.startswith(key))
+
+
+def test_daily_wrapper_retries_a_transient_failure_and_records_the_scan(tmp_path):
+    """Two DNS failures on the scan, then success: the day's bar is scanned, the
+    success heartbeat advances, and the log says what was absorbed."""
+    env, calls = _day_env(tmp_path, STUB_FAILS="3", STUB_FAIL_KEY="paper-scan")
+    done = subprocess.run(["bash", str(DAILY)], capture_output=True, text=True, env=env, cwd=str(ROOT))
+    assert done.returncode == 0
+    assert _calls(calls, "paper-scan") == 3
+    assert (tmp_path / "scan_hb").exists() and (tmp_path / "context_hb").exists()
+    log = (tmp_path / "scan.log").read_text()
+    assert "transient transport failure on attempt 1/3" in log
+    assert "transient transport failure on attempt 2/3" in log
+    assert "Transient retries used — context:1 scan:3 execute:1 reconcile:1" in log
+    assert "Exit code: 0" in log
+
+
+def test_daily_wrapper_retry_is_bounded_and_surfaces_the_failure(tmp_path):
+    """The retry must not become a loop, and a day that never scanned must end
+    non-zero with the success heartbeat untouched — that is what lets the 22:00
+    catch-up (and the hourly salvage) pick the bar up."""
+    env, calls = _day_env(tmp_path, STUB_FAILS="9", STUB_FAIL_KEY="paper-scan")
+    done = subprocess.run(["bash", str(DAILY)], capture_output=True, text=True, env=env, cwd=str(ROOT))
+    assert done.returncode == 1
+    assert _calls(calls, "paper-scan") == 3
+    assert not (tmp_path / "scan_hb").exists()
+    log = (tmp_path / "scan.log").read_text()
+    assert "Exit code: 1" in log and "email-report" in (tmp_path / "calls").read_text()
+
+
+def test_daily_wrapper_never_retries_crypto_execution_after_submitting(tmp_path):
+    """A transient failure AFTER an order was submitted must not re-run the step:
+    the order is already at the broker, so the retry could only re-post the same
+    client_order_id."""
+    env, calls = _day_env(
+        tmp_path,
+        STUB_FAILS="9",
+        STUB_FAIL_KEY="execute-intents",
+        STUB_ERR="  {'decision_id': 'abc', 'action': 'submitted', 'order_id': 'x'}\n"
+        "requests.exceptions.ConnectionError: Connection aborted",
+    )
+    done = subprocess.run(["bash", str(DAILY)], capture_output=True, text=True, env=env, cwd=str(ROOT))
+    assert _calls(calls, "execute-intents") == 1
+    assert done.returncode == 1
+    log = (tmp_path / "scan.log").read_text()
+    assert "failed after acting — not retrying" in log
+    # ...and the reconcile step still runs, so a fill submitted before the failure
+    # is booked instead of leaving a qty mismatch for the fail-closed check.
+    assert _calls(calls, "reconcile") == 1
+
+
+def test_daily_wrapper_never_retries_a_failure_a_retry_cannot_fix(tmp_path):
+    """A frozen-manifest mismatch or a BrokerError is deterministic."""
+    env, calls = _day_env(
+        tmp_path, STUB_FAILS="9", STUB_FAIL_KEY="paper-scan",
+        STUB_ERR="BrokerError: frozen values changed",
+    )
+    assert subprocess.run(
+        ["bash", str(DAILY)], capture_output=True, text=True, env=env, cwd=str(ROOT)
+    ).returncode == 1
+    assert _calls(calls, "paper-scan") == 1
+
+
+def test_stock_wrapper_retries_a_transient_failure(tmp_path):
+    """This slot has no second line, so a DNS blip must not cost the day's stock
+    intents."""
+    env, calls = _day_env(tmp_path, STUB_FAILS="3", STUB_FAIL_KEY="execute-intents")
+    done = subprocess.run(
+        ["bash", str(STOCK_WRAPPER)], capture_output=True, text=True, env=env, cwd=str(ROOT)
+    )
+    assert done.returncode == 0
+    assert _calls(calls, "execute-intents") == 3
+    assert (tmp_path / "stock_hb").exists()
+    log = (tmp_path / "stock.log").read_text()
+    assert "transient transport failure on attempt 1/3" in log
+    assert "Stock execution attempts used: 3" in log and "Exit code: 0" in log
+
+
+def test_stock_wrapper_retry_is_bounded_and_surfaces_the_failure(tmp_path):
+    env, calls = _day_env(tmp_path, STUB_FAILS="9", STUB_FAIL_KEY="execute-intents")
+    done = subprocess.run(
+        ["bash", str(STOCK_WRAPPER)], capture_output=True, text=True, env=env, cwd=str(ROOT)
+    )
+    assert done.returncode == 1
+    assert _calls(calls, "execute-intents") == 3
+    assert not (tmp_path / "stock_hb").exists()
+    assert "Exit code: 1" in (tmp_path / "stock.log").read_text()
+
+
+def test_failed_stock_execution_reaches_the_silent_cron_wrapper(tmp_path):
+    """End to end: the failure must produce the alert line the Hermes job delivers
+    (empty stdout = nothing sent), which required the inner wrapper's exit code."""
+    env, _ = _day_env(tmp_path, STUB_FAILS="9", STUB_FAIL_KEY="execute-intents")
+    done = subprocess.run(
+        ["bash", str(SILENT_STOCK)], capture_output=True, text=True, env=env, cwd=str(ROOT)
+    )
+    assert done.returncode == 0  # the silent wrapper always exits 0 by design
+    assert "FALL" in done.stdout
+    # ...and a healthy run stays silent.
+    ok_env, _ = _day_env(tmp_path, STUB_FAILS="0")
+    quiet_run = subprocess.run(
+        ["bash", str(SILENT_STOCK)], capture_output=True, text=True, env=ok_env, cwd=str(ROOT)
+    )
+    assert quiet_run.stdout.strip() == ""
+
+
+def test_money_slots_exit_with_the_cli_rc_through_the_seamed_binary(tmp_path):
+    """Every CLI call must go through $MONEY (the test seam), and the rc must
+    reach the caller — otherwise the silent cron wrappers' alert branch is
+    unreachable and a failed slot reports ok."""
+    for script in (DAILY, STOCK_WRAPPER):
+        text = script.read_text()
+        assert 'exit "$rc"' in text
+        assert '.venv/bin/money"' not in text
+        assert 'MONEY="${MONEY_BIN:-$REPO_DIR/.venv/bin/money}"' in text
+        assert 'source "$REPO_DIR/scripts/_lib.sh"' in text
+        assert "run_step" in text
+
+
+def test_the_transient_pattern_is_shared_not_forked():
+    """One definition: the stop monitor used to carry its own copy, so a fix to
+    the pattern (e.g. keeping "timed out" for the bounded HTTP timeout) could
+    silently miss the other two schedules."""
+    lib = LIB.read_text()
+    assert "TRANSIENT_RE='" in lib
+    assert "Temporary failure in name resolution" in lib and "timed out" in lib
+    for script in (ROOT / "scripts" / "intraday_stop_run.sh", DAILY, STOCK_WRAPPER):
+        assert "TRANSIENT_RE='" not in script.read_text()
+
+

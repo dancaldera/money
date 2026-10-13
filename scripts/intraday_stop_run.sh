@@ -38,7 +38,10 @@ rotate_log "$LOG"
 # of these transient messages, so "timed out" MUST stay in the pattern.
 STOP_MAX_ATTEMPTS="${STOP_MAX_ATTEMPTS:-3}"
 STOP_RETRY_SLEEP="${STOP_RETRY_SLEEP:-45}"
-TRANSIENT_RE='ConnectionError|NameResolutionError|ConnectionResetError|Max retries exceeded|Connection reset by peer|timed out|Temporary failure in name resolution'
+# The transient-failure pattern lives in _lib.sh (TRANSIENT_RE), shared with the
+# once-a-day wrappers so the three schedules cannot drift apart on what counts as
+# retryable. "timed out" MUST stay in it: the bounded HTTP timeout turns a hang
+# into one of those messages.
 
 # Set DRY_RUN=1 to report breaches without closing anything (for testing).
 EXTRA=""
