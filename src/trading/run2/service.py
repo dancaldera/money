@@ -295,7 +295,7 @@ class Run2Service:
                     "bar_end": bar_end,
                     "signal": signal,
                     "signal_price": str(price),
-                    "notional": str(entry_notional(self.cfg, frame["Close"])),
+                    "notional": str(entry_notional(self.cfg, frame["Close"], asset)),
                     "regime_score": int(regime) if regime is not None else None,
                     "negative_news_z": news_z,
                     "action": action,

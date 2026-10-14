@@ -21,6 +21,16 @@ Degenerate inputs never size *up*: a missing, short or zero-variance history
 returns the flat ``position_notional`` instead of the clipped maximum. The knob
 is pinned to ``None`` on every live run, so this module is inert there: it is
 replay-only until a human opens a run that carries it.
+
+The experiment-only per-asset multipliers ``position_notional_crypto_mult`` /
+``position_notional_stock_mult`` answer a different question: not *how much* risk
+per entry, but *where* the frozen gross budget is spent. They scale the base slot
+of one asset class before any volatility scaling, so a book can hold the same
+17 slots / $10,625 gross with, say, $469 crypto slots and $781 equity slots. The
+measured motivation is the fee bill by leg (crypto supplies 56% of the trades and
+86% of the fees, so the equity leg earns ~29% more net per dollar deployed): the
+knob exists to test whether re-splitting the same budget raises the dollars. Both
+are pinned absent on every live run and default to 1.0 (the flat slot).
 """
 
 from __future__ import annotations
@@ -57,9 +67,26 @@ def realized_vol_pct(closes: pd.Series, window: int) -> float | None:
     return std * sqrt(ANNUALIZATION_DAYS) * 100
 
 
-def entry_notional(cfg: RunConfig, closes: pd.Series | None = None) -> float:
-    """Notional for one fresh entry: flat, or scaled to ``position_vol_target_pct``."""
-    base = float(cfg.portfolio.position_notional)
+def asset_notional_mult(cfg: RunConfig, asset: str | None) -> float:
+    """Per-asset multiplier on the flat slot: 1.0 unless the knob is set.
+
+    ``asset`` is the watchlist asset class (``"crypto"`` / ``"stock"``); an
+    unknown or missing class is never sized differently.
+    """
+    crypto = cfg.portfolio.position_notional_crypto_mult
+    stock = cfg.portfolio.position_notional_stock_mult
+    if asset == "crypto" and crypto is not None:
+        return float(crypto)
+    if asset == "stock" and stock is not None:
+        return float(stock)
+    return 1.0
+
+
+def entry_notional(
+    cfg: RunConfig, closes: pd.Series | None = None, asset: str | None = None
+) -> float:
+    """Notional for one fresh entry: flat, tilted by asset, vol-scaled if set."""
+    base = float(cfg.portfolio.position_notional) * asset_notional_mult(cfg, asset)
     target = cfg.portfolio.position_vol_target_pct
     if target is None or closes is None:
         return base

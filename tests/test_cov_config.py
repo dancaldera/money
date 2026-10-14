@@ -9,7 +9,7 @@ import yaml
 
 from trading.run2.config import RunConfig, RunConfigError, load_run_config
 
-from .run2_helpers import run2_config
+from .run2_helpers import ROOT, run2_config
 
 
 def _write_bad_manifest(tmp_path, mutate):
@@ -70,3 +70,28 @@ def test_gap_limit_and_symbols_shape():
     assert cfg.gap_limit_pct("crypto") == cfg.execution.crypto_gap_limit_pct
     assert cfg.gap_limit_pct("stock") == cfg.execution.stock_gap_limit_pct
     assert len(cfg.symbols) == len(cfg.crypto_symbols) + len(cfg.stock_symbols)
+
+
+def test_the_live_caps_pin_the_flat_slot_exactly():
+    """The count caps and the exposure caps are the same constraint written twice.
+
+    Every live manifest sits exactly on the coincidence — `position_notional`
+    times the count cap *is* the exposure cap — so the flat slot is pinned from
+    both sides: any other notional either strands budget under an exposure cap or
+    displaces a slot, and a displaced slot is a permanently lost crossing
+    (measured: docs/experiments.md, 'the per-asset notional tilt').
+
+    run3 is the fully packed version (the breadth ladder): 8 + 9 = 17 slots and
+    $5,000 + $5,625 = $10,625 of gross, so $625 is the *unique* notional that
+    fills its book exactly. run2's legs overlap instead (10 slots for an 8-slot
+    book), which is why it spends only 8 x $625 of its $5,000 gross.
+    """
+    for name in ("run2", "run3"):
+        p = load_run_config(ROOT / "config" / f"{name}.yaml").portfolio
+        assert p.position_notional * p.max_crypto_positions == p.max_crypto_exposure
+        assert p.position_notional * p.max_stock_positions == p.max_stock_exposure
+        assert p.position_notional * p.max_positions == p.max_gross_exposure
+
+    p3 = load_run_config(ROOT / "config" / "run3.yaml").portfolio
+    assert p3.max_crypto_positions + p3.max_stock_positions == p3.max_positions
+    assert p3.max_crypto_exposure + p3.max_stock_exposure == p3.max_gross_exposure

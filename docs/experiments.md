@@ -1127,3 +1127,108 @@ done
 .venv/bin/python scripts/analysis_marginal_trades.py --control exp-slots-all-recover \
     exp-reentry-5 exp-reentry-10 exp-reentry-252
 ```
+
+## Measured: the per-asset notional tilt — the caps already pin the split (one clock, 2022-01-01 → 2026-10-13)
+
+The last live *number* with no manifest knob was **where** the frozen gross budget
+is spent. The fee bill by leg (crypto supplies 56% of the trades and 86% of the
+fees; the equity leg earns ~29% more net per dollar deployed) says the flat $625
+slot spends too much of the budget on the expensive leg, so a seventh
+experiment-only knob was added for it: `position_notional_crypto_mult` /
+`position_notional_stock_mult` scale the base slot of one asset class before any
+volatility scaling. The replay sizes with it and the live gate prices exactly the
+same notional (`risk._candidate_notional` → `sizing.entry_notional`), so a tilted
+manifest would submit what it back-tested. Both are pinned to `None` on every
+live run by the same frozen check as the other six knobs.
+
+Variants hold the *same budget*: `9*ms + 8*mc = 17`, so a full book still commits
+exactly the frozen $10,625 of gross, and only the split moves.
+
+| manifest | stock slot | crypto slot | return | maxDD | ret/DD | trades | win% | expectancy | total | Sharpe | PF | DSR |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `exp-slots-all-recover` (flat, live split) | $625.00 | $625.00 | **+10.62%** | -2.79% | 3.80 | 366 | 30.1% | **$25.75** | **$9,424** | 0.793 | 1.86 | 0.924 |
+| `exp-tilt-ms080` (crypto-heavy) | $500.00 | $765.62 | +5.94% | -2.90% | 2.05 | 374 | 30.5% | $12.66 | $4,736 | 0.630 | 1.40 | 0.700 |
+| `exp-tilt-ms110` | $687.50 | $554.69 | +10.10% | -2.70% | 3.75 | 363 | 30.0% | $25.29 | $9,182 | 0.818 | 1.88 | 0.925 |
+| `exp-tilt-ms120` | $750.00 | $484.38 | +9.30% | -2.60% | 3.58 | 362 | 29.6% | $23.22 | $8,407 | 0.821 | 1.84 | 0.913 |
+| `exp-tilt-ms140` | $875.00 | $343.75 | +8.96% | -2.26% | 3.96 | 350 | 28.9% | $23.17 | $8,109 | 0.955 | 1.94 | 0.941 |
+| `exp-tilt-ms160` (equity-heavy) | $1,000.00 | $203.12 | +7.76% | -2.05% | 3.78 | 337 | 29.1% | $20.15 | $6,791 | **1.037** | **1.94** | **0.943** |
+
+**The tilt loses dollars in both directions, and the reason is structural, not
+path luck.** The frozen caps are the count cap and the exposure cap written twice,
+and run3's book is fully packed, so `$625` is the *unique* notional at which all
+four hold with equality: `8 x $625 = $5,000 = max_crypto_exposure`,
+`9 x $625 = $5,625 = max_stock_exposure` (and 8 + 9 = 17 slots),
+`17 x $625 = $10,625 = max_gross_exposure` (= $5,000 + $5,625). Every other split
+either strands budget under an exposure cap or displaces a slot — and a displaced
+slot is a *permanently lost crossing* (the frozen fresh-cross rule needs a new
+cross to re-enter). Re-measured on each artifact (`results/<run>/portfolio-backtest`):
+
+| manifest | peak gross | mean gross | fees | crypto closed / $ | stock closed / $ | top guard blocks |
+|---|---|---|---|---|---|---|
+| control | $8,750 | $4,029 | $766 | 205 / **+$4,890** | 161 / +$4,534 | correlation:2 (35), max_crypto_exposure (13) |
+| `exp-tilt-ms080` | $8,328 | $3,810 | $872 | 201 / **+$828** | 173 / +$3,908 | correlation:2 (38), max_crypto_exposure (17) |
+| `exp-tilt-ms120` | $9,125 | $3,886 | $649 | 214 / +$3,578 | 148 / +$4,830 | correlation:2 (36), max_stock_exposure (27) |
+| `exp-tilt-ms140` | $8,000 | $3,675 | $505 | 217 / +$2,518 | 133 / +$5,590 | max_stock_exposure (45) |
+| `exp-tilt-ms160` | $6,625 | $3,414 | $352 | 217 / +$1,488 | 120 / +$5,303 | max_stock_exposure (67) |
+
+1. **Equity-heavier strands the budget.** A $875 stock slot fits `max_stock_exposure`
+   only 6 times (7 x $875 > $5,625), a $1,000 slot 5 times: the equity-heavy rows
+   block 45 and 67 stock entries on `max_stock_exposure` (11 in the control) and
+   never fill their book — peak gross $8,000 and $6,625 against the control's
+   $8,750, mean deployed capital $3,675 / $3,414 against $4,029. Fewer dollars
+   deployed is fewer dollars earned, which is the whole ladder lesson in one row.
+2. **Crypto-heavier keeps the book nearly full and still loses the most.** At
+   $765.62 a crypto slot the $5,000 crypto exposure cap fits only 6 positions, so
+   17 crypto entries are blocked (13 in the control) and the crypto sleeve earns
+   **+$828 where the control earned +$4,890 on 201 vs 205 round trips**: the
+   displaced slots are the winners (the same displacement seen when the universe
+   was widened: `SOL/USD` earning +$13 instead of +$3,775).
+3. **The marginal lens prices both directions negative.** `analysis_marginal_trades.py
+   --control exp-slots-all-recover`: `exp-tilt-ms080` adds 17 entries at +$12.76
+   (0.50x the control's expectancy) and drops 9 round trips worth +$4,161 → **net
+   -$4,049.89**; `exp-tilt-ms140` adds 14 at -$6.35 (-0.25x) and drops 30 worth
+   +$600 → **net -$427.36**.
+4. **The equity-heavy rows do buy risk-adjusted shape — and it is paid in dollars.**
+   `exp-tilt-ms160` has the best Sharpe (1.037), PF (1.94) and DSR (0.943) of the
+   whole ladder at the lowest maxDD (-2.05%), and gives up $2,633 of P&L for it:
+   the same exchange rate as volatility targeting (~$1.7-2.7k of P&L per 1pp of
+   drawdown), and this desk is scored in dollars at 1x, where nothing halts.
+5. **External check on the premise.** The motivation rests on a fixed cost ratio,
+   and Alpaca's crypto fee table fixes it (tier 1: maker 0.15% / taker 0.25%, the
+   desk's 25bps assumption; equities remain commission-free), so the fee bill by
+   leg is not stale. The allocation literature that says asset-specific costs
+   should drive the weights (Olivares-Nadal & DeMiguel 2018, on the turnover
+   penalty in mean-variance; arXiv:2501.12841 on cost-aware crypto allocation,
+   where volatility-timing portfolios do beat naive 1/N) assumes the weights are
+   free to move — here the count *and* the exposure caps make the split a
+   constraint, not a choice, and the desk's own vol-target measurement already
+   failed to reproduce that literature's vol-timing gain (the binding resource is
+   a hard gross cap, not turnover). The measured answer is that the caps dominate
+   the cost ratio, and they already sit at the cost-aware allocation.
+
+**Consequence:** keep the flat `$625`. The split is not a lever: it is pinned by
+the same four frozen constraints, and any tilt trades a permanently lost crossing
+(or stranded gross) for a smaller fee bill. Do not re-open "re-split the budget
+between the legs" — the knob now exists, it was priced on the run3 basis, and it
+loses in both directions. (`tests/test_cov_config.py::test_the_live_caps_pin_the_flat_slot_exactly`
+pins the arithmetic identity that makes this true, on both live manifests.)
+
+```bash
+for m in exp-slots-all-recover exp-tilt-ms080 exp-tilt-ms110 exp-tilt-ms120 \
+         exp-tilt-ms140 exp-tilt-ms160; do
+  .venv/bin/money portfolio-backtest --run-config config/experiments/$m.yaml
+done
+.venv/bin/python scripts/analysis_experiment_table.py exp-slots-all-recover \
+    exp-tilt-ms080 exp-tilt-ms110 exp-tilt-ms120 exp-tilt-ms140 exp-tilt-ms160
+.venv/bin/python scripts/analysis_marginal_trades.py --control exp-slots-all-recover \
+    exp-tilt-ms080 exp-tilt-ms140
+# peak/mean gross + per-leg dollars + the blocked_by census per artifact:
+python - <<'PY'
+import pandas as pd, pathlib
+for r in ["exp-slots-all-recover","exp-tilt-ms080","exp-tilt-ms120","exp-tilt-ms140","exp-tilt-ms160"]:
+    d = pathlib.Path("results")/r/"portfolio-backtest"
+    dec, tr = pd.read_csv(d/"decisions.csv"), pd.read_csv(d/"trades.csv")
+    print(r, dec[dec.blocked_by.notna()].blocked_by.value_counts().to_dict(),
+          tr[tr.side=="sell"].groupby("asset").realized_pl.sum().to_dict())
+PY
+```

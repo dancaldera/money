@@ -14,16 +14,17 @@ from .sizing import entry_notional
 
 
 def _candidate_notional(
-    cfg: RunConfig, symbol: str, bars: Mapping[str, pd.DataFrame] | None
+    cfg: RunConfig, symbol: str, bars: Mapping[str, pd.DataFrame] | None, asset: str | None = None
 ) -> float:
     """The notional a fresh entry into ``symbol`` would commit, right now.
 
-    Flat on every live run; risk-scaled when the experiment knob is set. The
-    gate must price the *same* notional the executor will submit, otherwise a
-    scaled entry could pass a cap check the replay would refuse.
+    Flat on every live run; per-asset tilted and/or risk-scaled when an
+    experiment knob is set. The gate must price the *same* notional the executor
+    will submit, otherwise a scaled entry could pass a cap check the replay would
+    refuse.
     """
     closes = bars[symbol]["Close"] if bars is not None and symbol in bars else None
-    return entry_notional(cfg, closes)
+    return entry_notional(cfg, closes, asset)
 
 
 @dataclass(frozen=True)
@@ -81,7 +82,7 @@ def check_entry(
     if any(p["symbol"] == symbol for p in pending):
         return RiskResult(False, "buy_already_pending")
 
-    notional = Decimal(str(_candidate_notional(cfg, symbol, bars)))
+    notional = Decimal(str(_candidate_notional(cfg, symbol, bars, asset)))
     position_count = len(positions) + len(pending)
     gross = sum((p.cost_basis for p in positions.values()), Decimal(0))
     gross += sum((Decimal(str(p["notional"])) for p in pending), Decimal(0))

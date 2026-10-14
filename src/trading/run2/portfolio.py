@@ -341,10 +341,10 @@ def simulate_portfolio(
                 # decisions.csv. Deployment is capped by whichever of these
                 # fires first, and only the counters can say which one it is.
                 # The candidate's own notional is used (flat on every live run;
-                # risk-scaled when the experiment knob is set), and pending buys
-                # contribute their own committed notionals rather than a count
-                # times a flat size.
-                notional = entry_notional(cfg, history["Close"])
+                # per-asset tilted and/or risk-scaled when an experiment knob is
+                # set), and pending buys contribute their own committed
+                # notionals rather than a count times a flat size.
+                notional = entry_notional(cfg, history["Close"], asset)
                 pending_notional = sum(p.notional for p in pending_buys)
                 same_pending_notional = sum(p.notional for p in same_pending)
                 if len(positions) + len(pending_buys) >= cfg.portfolio.max_positions:

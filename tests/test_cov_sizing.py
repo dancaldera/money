@@ -15,6 +15,7 @@ from trading.run2.sizing import (
     ANNUALIZATION_DAYS,
     VOL_SCALE_MAX,
     VOL_SCALE_MIN,
+    asset_notional_mult,
     entry_notional,
     realized_vol_pct,
 )
@@ -82,6 +83,41 @@ def test_scale_is_the_volatility_ratio_and_clamps_at_both_bounds():
     assert entry_notional(cfg, smooth) == 625.0 * VOL_SCALE_MAX
 
 
+# --- the per-asset notional tilt ------------------------------------------------- #
+def test_asset_tilt_is_flat_unless_the_knob_is_set_for_that_class():
+    base = run2_config()
+    assert asset_notional_mult(base, "crypto") == 1.0
+    assert asset_notional_mult(base, "stock") == 1.0
+    cfg = _cfg(position_notional_crypto_mult=0.5, position_notional_stock_mult=2.0)
+    assert asset_notional_mult(cfg, "crypto") == 0.5
+    assert asset_notional_mult(cfg, "stock") == 2.0
+    # An unknown or missing class is never sized differently, even with both set:
+    # the tilt is a re-split of the frozen budget, not a third sizing rule.
+    assert asset_notional_mult(cfg, None) == 1.0
+    assert asset_notional_mult(cfg, "option") == 1.0
+
+
+def test_asset_tilt_scales_the_slot_and_stacks_on_the_volatility_scale():
+    cfg = _cfg(position_notional_crypto_mult=0.5)
+    assert entry_notional(cfg, None, "crypto") == pytest.approx(312.5)
+    assert entry_notional(cfg, None, "stock") == pytest.approx(625.0)
+    # The tilt multiplies the base the volatility scale is applied to, so a
+    # tilted calm symbol is still sized inside the same 0.25..4.0 band.
+    sized = _cfg(
+        position_notional_stock_mult=1.5, position_vol_target_pct=50, position_vol_window=10
+    )
+    calm = pd.Series([100.0] + [100.0 * (1.01 if i % 2 else 0.99) for i in range(40)])
+    vol = realized_vol_pct(calm, 10)
+    assert entry_notional(sized, calm, "stock") == pytest.approx(937.5 * 50 / vol)
+
+
+def test_gate_prices_the_tilted_notional_of_the_asset_being_checked():
+    cfg = _cfg(position_notional_crypto_mult=0.5, position_notional_stock_mult=1.25)
+    wild = ohlcv([100.0] * 40)
+    assert _candidate_notional(cfg, "BTC/USD", {"BTC/USD": wild}, "crypto") == 312.5
+    assert _candidate_notional(cfg, "AAPL", {"AAPL": wild}, "stock") == 781.25
+
+
 # --- the live gate prices the same notional the executor submits --------------- #
 def test_candidate_notional_falls_back_to_flat_without_bars():
     cfg = _cfg(position_vol_target_pct=50, position_vol_window=2)
@@ -120,6 +156,22 @@ def test_replay_sizes_a_calm_symbol_larger_than_a_volatile_one():
     assert scaled["AAPL"] == pytest.approx(625.0 * VOL_SCALE_MAX)
 
 
+def test_replay_splits_the_frozen_budget_between_the_two_legs():
+    frame = {"AAPL": ohlcv(_ramp(0.0)), "BTC/USD": ohlcv(_ramp(0.0))}
+    flat = _entry_notionals(simulate_portfolio(run2_config(), frame))
+    assert set(flat) == {"AAPL", "BTC/USD"}
+    assert all(value == pytest.approx(625.0) for value in flat.values())
+
+    tilted = simulate_portfolio(
+        _cfg(position_notional_crypto_mult=0.5, position_notional_stock_mult=1.5), frame
+    )
+    sized = _entry_notionals(tilted)
+    assert sized["BTC/USD"] == pytest.approx(312.5)
+    assert sized["AAPL"] == pytest.approx(937.5)
+    # Same two crossings, same clock: only the split of the budget moved.
+    assert len(tilted.trades) == 2
+
+
 # --- config surface ------------------------------------------------------------ #
 def _manifest(tmp_path, run_id, portfolio_overrides):
     """Write a research manifest based on the live one, under a new run_id."""
@@ -154,3 +206,23 @@ def test_live_runs_pin_the_sizing_knobs_absent(tmp_path):
         load_run_config(path)
     # ... and the research path loads the very same manifest.
     assert load_run_config(path, strict=False).portfolio.position_vol_target_pct == 50
+
+
+def test_asset_tilt_must_be_positive(tmp_path):
+    for key in ("position_notional_crypto_mult", "position_notional_stock_mult"):
+        with pytest.raises(RunConfigError, match=key):
+            load_run_config(_manifest(tmp_path, "exp-bad-tilt", {key: 0}))
+
+
+def test_live_runs_pin_the_asset_tilt_absent(tmp_path):
+    # The tilt re-splits the frozen gross budget, so it changes what the desk
+    # trades: the strict loader (every live command) refuses a manifest carrying
+    # it, and only portfolio-backtest may replay one.
+    path = _manifest(
+        tmp_path, "exp-tilted-lookalike", {"position_notional_crypto_mult": 0.5}
+    )
+    with pytest.raises(RunConfigError, match="frozen values changed"):
+        load_run_config(path)
+    loaded = load_run_config(path, strict=False)
+    assert loaded.portfolio.position_notional_crypto_mult == 0.5
+    assert loaded.portfolio.position_notional_stock_mult is None
