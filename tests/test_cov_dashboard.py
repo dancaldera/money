@@ -199,3 +199,49 @@ def test_write_dashboard_writes_file(dirs, no_broker):
     assert "<!DOCTYPE html>" in path.read_text()
     custom = dashboard.write_dashboard(dirs["results"] / "sub" / "dash.html")
     assert custom.exists()
+
+
+def test_legacy_daily_keys_are_not_a_data_outage(dirs, no_broker, monkeypatch):
+    """A few hundred dead per-day keys must not hide a stale live-window file."""
+    monkeypatch.setattr(
+        "trading.data.cache.recent_window_start",
+        lambda days=400, today=None: "2025-08-27",
+    )
+    df = pd.DataFrame({"Close": [1.0, 2.0]}, index=pd.to_datetime(["2026-01-01", "2026-01-02"]))
+    live = dirs["data"] / "alpaca_stock_AAPL_1d_2025-08-27.parquet"
+    replay = dirs["data"] / "alpaca_stock_SPY_1d_2022-01-01.parquet"
+    legacy = dirs["data"] / "alpaca_stock_AAPL_1d_2025-08-07.parquet"
+    df.to_parquet(live)
+    nan_replay = pd.DataFrame({"Close": [1.0, float("nan")]}, index=df.index)
+    nan_replay.to_parquet(replay)
+    df.to_parquet(legacy)
+    old = time.time() - 48 * 3600
+    os.utime(legacy, (old, old))
+
+    ctx = dashboard.collect_context()
+    text = " ".join(ctx["insights"])
+    assert "fresh and NaN-free" in text
+    assert "<b>1</b> legacy daily-key files ignored" in text
+    assert "not a data outage" in text
+    assert "replay cache has <b>1</b> NaN rows" in text
+    roles = {c["name"]: c["role"] for c in ctx["coverage"]}
+    assert roles["alpaca_stock_AAPL_1d_2025-08-27"] == "live"
+    assert roles["alpaca_stock_SPY_1d_2022-01-01"] == "replay"
+    assert roles["alpaca_stock_AAPL_1d_2025-08-07"] == "legacy"
+    legacy_row = next(c for c in ctx["coverage"] if c["role"] == "legacy")
+    assert legacy_row["rows"] == 0  # dead keys are counted, not opened
+    card = dashboard._coverage_card(ctx["coverage"])
+    assert "2025-08-27" in card and "2022-01-01" in card
+    assert "2025-08-07" not in card
+    assert "1 legacy daily-key files omitted" in card
+
+    os.utime(live, (old, old))
+    ctx = dashboard.collect_context()
+    stale_line = next(s for s in ctx["insights"] if "stale" in s)
+    assert "<b>1</b> live-window datasets: <b>1</b> stale" in stale_line
+
+    live.unlink()
+    replay.unlink()
+    ctx = dashboard.collect_context()
+    assert any("No live-window datasets cached." in s for s in ctx["insights"])
+    assert "no live dataset" in dashboard._coverage_card(ctx["coverage"])

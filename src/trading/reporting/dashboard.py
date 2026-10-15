@@ -18,6 +18,8 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
+from ..data.cache import cache_file_role
+
 REPO_DIR = Path(__file__).resolve().parents[3]
 RESULTS_DIR = REPO_DIR / "results"
 DATA_DIR = REPO_DIR / "data"
@@ -104,20 +106,39 @@ def _backtests(strategy: str) -> list[dict]:
 
 
 def _coverage() -> list[dict]:
+    """Cached datasets, tagged by role.
+
+    Legacy per-day keys are counted but not opened: a few hundred of them used
+    to dominate the stale census and hide a genuinely stale live-window file.
+    """
     rows = []
     for f in sorted(glob.glob(str(DATA_DIR / "*.parquet"))):
+        name = os.path.basename(f)
+        role = cache_file_role(name)
+        age_h = (time.time() - os.path.getmtime(f)) / 3600
+        if role == "legacy":
+            rows.append({
+                "name": name.removesuffix(".parquet"),
+                "rows": 0,
+                "first": "-",
+                "last": "-",
+                "nans": 0,
+                "age_h": age_h,
+                "role": role,
+            })
+            continue
         try:
             df = pd.read_parquet(f)
         except Exception:  # noqa: BLE001
             continue
-        age_h = (time.time() - os.path.getmtime(f)) / 3600
         rows.append({
-            "name": os.path.basename(f).replace(".parquet", ""),
+            "name": name.removesuffix(".parquet"),
             "rows": len(df),
             "first": str(df.index.min().date()) if len(df) else "-",
             "last": str(df.index.max().date()) if len(df) else "-",
             "nans": int(df.isna().any(axis=1).sum()),
             "age_h": age_h,
+            "role": role,
         })
     return rows
 
@@ -192,12 +213,34 @@ def collect_context() -> dict:
         beat = sum(1 for b in backtests if b["alpha"] > 0)
         insights.append(f"Latest backtests: {html.escape(strategy)} beat buy &amp; hold on <b>{beat}/{len(backtests)}</b> symbols (by alpha).")
     if coverage:
-        stale = sum(1 for c in coverage if c["age_h"] > 24)
-        nans = sum(c["nans"] for c in coverage)
-        if nans == 0 and stale == 0:
-            insights.append(f"All <b>{len(coverage)}</b> cached datasets are fresh and NaN-free.")
+        # Alarm only on the window the desk reads, plus non-alpaca files.
+        # Replay age is normal between experiment sittings (they refetch on
+        # use); legacy keys are dead and must not look like a data outage.
+        watched = [c for c in coverage if c.get("role") not in ("legacy", "replay")]
+        legacy_n = sum(1 for c in coverage if c.get("role") == "legacy")
+        replay_nans = sum(c["nans"] for c in coverage if c.get("role") == "replay")
+        stale = sum(1 for c in watched if c["age_h"] > 24)
+        nans = sum(c["nans"] for c in watched)
+        if not watched:
+            insights.append("No live-window datasets cached.")
+        elif nans == 0 and stale == 0:
+            insights.append(
+                f"All <b>{len(watched)}</b> live-window datasets are fresh and NaN-free."
+            )
         else:
-            insights.append(f"<b>{len(coverage)}</b> datasets: <b>{stale}</b> stale (&gt;24h), <b>{nans}</b> NaN rows.")
+            insights.append(
+                f"<b>{len(watched)}</b> live-window datasets: <b>{stale}</b> stale "
+                f"(&gt;24h), <b>{nans}</b> NaN rows."
+            )
+        if legacy_n:
+            insights.append(
+                f"<b>{legacy_n}</b> legacy daily-key files ignored "
+                "(dead cache keys, not a data outage)."
+            )
+        if replay_nans:
+            insights.append(
+                f"Full-history replay cache has <b>{replay_nans}</b> NaN rows."
+            )
     if activity["counts"]:
         bought = activity["counts"].get("bought", 0)
         stopped = activity["counts"].get("stopped", 0)
@@ -317,16 +360,30 @@ def _backtests_card(bts: list[dict], strategy: str) -> str:
 def _coverage_card(cov: list[dict]) -> str:
     if not cov:
         return '<div class="card"><h2>Data coverage</h2><p class="muted">No cached data.</p></div>'
+    shown = [c for c in cov if c.get("role") != "legacy"]
+    legacy_n = len(cov) - len(shown)
+    if not shown:
+        return (
+            '<div class="card full"><h2>Data coverage</h2>'
+            f'<p class="muted">{legacy_n} legacy daily-key files, no live dataset.</p></div>'
+        )
     rows = ""
-    for c in cov:
+    for c in shown:
         nan_cls = "neg" if c["nans"] else "muted"
-        rows += (f"<tr><td>{html.escape(c['name'])}</td><td>{c['rows']}</td>"
+        role = html.escape(c.get("role") or "—")
+        rows += (f"<tr><td>{html.escape(c['name'])}</td><td class='muted'>{role}</td>"
+                 f"<td>{c['rows']}</td>"
                  f"<td class='muted'>{c['first']}&rarr;{c['last']}</td>"
                  f"<td class='{nan_cls}'>{c['nans']}</td></tr>")
+    note = (
+        f'<div class="muted">{legacy_n} legacy daily-key files omitted '
+        "(dead cache keys, not a data outage).</div>"
+        if legacy_n else ""
+    )
     return (
         '<div class="card full"><h2>Data coverage</h2>'
-        '<table><tr><th>dataset</th><th>rows</th><th>range</th><th>NaNs</th></tr>'
-        f'{rows}</table></div>'
+        '<table><tr><th>dataset</th><th>role</th><th>rows</th><th>range</th><th>NaNs</th></tr>'
+        f'{rows}</table>{note}</div>'
     )
 
 

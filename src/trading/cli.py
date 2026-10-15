@@ -19,6 +19,7 @@ import yaml
 
 from .backtest import run_backtest
 from .data import drop_forming_bar, fetch_alpaca_daily, fetch_crypto, fetch_equity, load_or_fetch
+from .data.cache import recent_window_start
 from .live import BrokerError, PaperBroker, evaluate, stop_breached
 from .reporting import RESULTS_DIR, record_paper_action, record_run, summarize, write_dashboard
 from .reporting import email_report as email_report_mod
@@ -149,10 +150,11 @@ def _recent_window_start(days: int = 400, today: date | None = None) -> str:
 
     The window is never shorter than ``days``: it starts exactly ``days`` before
     the 1st, so it grows to ``days + 30`` across a long month. The scan only
-    needs the SMA history, which is ~32 bars.
+    needs the SMA history, which is ~32 bars. The formula lives in
+    ``data.cache.recent_window_start`` so the dashboard census cannot drift
+    from the key the desk actually writes.
     """
-    anchor = (today or date.today()).replace(day=1) - timedelta(days=days)
-    return anchor.isoformat()
+    return recent_window_start(days, today)
 
 
 def _run2_bars(run_cfg, cfg: dict, *, refresh: bool = False, recent: bool = True):

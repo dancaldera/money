@@ -94,3 +94,22 @@ def test_fetch_error_with_no_cache_raises(tmp_cache):
 
     with pytest.raises(RuntimeError):
         load_or_fetch("missing", boom)
+
+
+def test_cache_file_role_splits_the_live_window_from_dead_keys():
+    from datetime import date
+
+    from trading.data.cache import cache_file_role, recent_window_start
+
+    today = date(2026, 10, 15)
+    assert recent_window_start(today=today) == "2025-08-27"
+    assert recent_window_start(today=date(2026, 9, 30)) == "2025-07-28"
+    # Same formula the desk writes, including a symbol that contains '_'.
+    assert cache_file_role("alpaca_crypto_BTC_USD_1d_2025-08-27.parquet", today=today) == "live"
+    assert cache_file_role("alpaca_stock_SPY_1d_2022-01-01.parquet", today=today) == "replay"
+    assert cache_file_role("alpaca_stock_AAPL_1d_2025-08-07.parquet", today=today) == "legacy"
+    assert cache_file_role("stale.parquet", today=today) == "other"
+    # The live name rolls with the month, not the day.
+    assert cache_file_role(
+        "alpaca_stock_AAPL_1d_2025-08-27.parquet", today=date(2026, 9, 30)
+    ) == "legacy"
