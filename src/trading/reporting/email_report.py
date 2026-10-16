@@ -196,14 +196,16 @@ def _render_text(ctx: dict) -> str:
             )
 
     act = ctx.get("activity", {})
+    source = f" · {act['source']}" if act.get("source") else ""
     w(f"\n-- Last scan{(' (' + act['last_when'] + ')') if act.get('last_when') else ''} "
-      f"[strategy: {ctx.get('strategy', '?')}] --")
+      f"[strategy: {ctx.get('strategy', '?')}{source}] --")
     rows = act.get("last_run") or []
     if rows:
         for r in rows:
             mark = "" if r["action"] == "none" else "   <-- ACTION"
+            reason = f"  reason={r['reason']}" if r.get("reason") else ""
             w(f"    {r['symbol']:<10} signal={r['signal']:<7} holding={str(r['holding']):<5} "
-              f"action={r['action']}{mark}")
+              f"action={r['action']}{reason}{mark}")
     else:
         w("  nothing logged yet")
 
@@ -353,11 +355,14 @@ def _render_html(ctx: dict) -> str:
     scan_rows = ""
     for r in act.get("last_run") or []:
         color = _C["green"] if r["action"] != "none" else _C["grey"]
+        reason = f" · {esc(str(r['reason']))}" if r.get("reason") else ""
         scan_rows += _tds(esc(str(r["symbol"])), esc(str(r["signal"])),
                           esc(str(r["holding"])),
-                          (f'<span style="color:{color}">{esc(str(r["action"]))}</span>', ""))
+                          (f'<span style="color:{color}">{esc(str(r["action"]))}{reason}</span>', ""))
     if scan_rows:
+        source = f' · {esc(str(act["source"]))}' if act.get("source") else ""
         sub = f' · {act["last_when"]}' if act.get("last_when") else ""
+        sub = source + sub
         parts.append(_card(
             f"Last scan — {esc(ctx.get('strategy', '?'))}{sub}",
             '<table style="border-collapse:collapse;width:100%">'

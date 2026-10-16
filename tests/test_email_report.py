@@ -109,3 +109,20 @@ def test_email_configured_reflects_env(monkeypatch):
     assert msg.get_content_type() == "multipart/alternative"   # text + html
     parts = list(msg.iter_parts())
     assert [p.get_content_type() for p in parts] == ["text/plain", "text/html"]
+
+
+def test_digest_prints_a_ledger_scan_reason(ctx):
+    ctx["activity"] = {
+        "counts": {},
+        "last_when": "2026-10-15 18:36",
+        "source": "ledger",
+        "last_run": [{
+            "symbol": "BTC/USD", "signal": "SELL", "holding": True,
+            "action": "sell_intent", "reason": "reverse_cross",
+        }],
+    }
+    _, text, body = er.build_digest(ctx)
+    assert "[strategy: sma_cross · ledger]" in text
+    assert "reason=reverse_cross" in text and "<-- ACTION" in text
+    assert "sell_intent · reverse_cross" in body
+    assert "Last scan — sma_cross · ledger" in body

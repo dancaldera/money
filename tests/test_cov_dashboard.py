@@ -245,3 +245,106 @@ def test_legacy_daily_keys_are_not_a_data_outage(dirs, no_broker, monkeypatch):
     ctx = dashboard.collect_context()
     assert any("No live-window datasets cached." in s for s in ctx["insights"])
     assert "no live dataset" in dashboard._coverage_card(ctx["coverage"])
+
+
+def _seed_run(dirs):
+    config_dir = dirs["repo"] / "config"
+    config_dir.mkdir(exist_ok=True)
+    shutil.copy(ROOT / "config" / "run3.yaml", config_dir / "run3.yaml")
+    from trading.run2 import RunLedger, load_run_config
+
+    cfg = load_run_config(config_dir / "run3.yaml")
+    ledger = RunLedger(dirs["results"] / cfg.run_id / "ledger.sqlite")
+    ledger.initialize_run(cfg, "acct")
+    return cfg, ledger
+
+
+def _decide(ledger, cfg, **overrides):
+    row = {
+        "run_id": cfg.run_id,
+        "portfolio": "baseline",
+        "symbol": "AAPL",
+        "asset": "stock",
+        "strategy": "sma_cross",
+        "bar_end": "2026-10-15T04:00:00+00:00",
+        "signal": "HOLD",
+        "signal_price": "100",
+        "notional": "625",
+        "action": "none",
+        "reason": "holding",
+        "config_hash": cfg.fingerprint,
+        "decided_at": "2026-10-16T00:36:43+00:00",
+    }
+    row.update(overrides)
+    ledger.record_decision(row)
+
+
+def test_digest_reads_the_ledger_scan_when_the_journal_is_absent(dirs):
+    """Crypto and equity close on different bar clocks; one scan writes both."""
+    cfg, ledger = _seed_run(dirs)
+    _decide(ledger, cfg, symbol="MSFT", reason="no_fresh_cross",
+            decided_at="2026-10-14T00:36:00+00:00", bar_end="2026-10-13T04:00:00+00:00")
+    _decide(ledger, cfg, symbol="NFLX", reason="no_fresh_cross",
+            decided_at="2026-10-16T00:34:00+00:00")
+    _decide(ledger, cfg, symbol="AAPL", reason="holding")
+    _decide(ledger, cfg, symbol="BTC/USD", asset="crypto", signal="SELL",
+            action="sell_intent", reason="reverse_cross",
+            bar_end="2026-10-15T00:00:00+00:00")
+    _decide(ledger, cfg, symbol="SOL/USD", portfolio="shadow_regime", signal="BUY",
+            action="buy_intent", reason="allowed", asset="crypto")
+    _decide(ledger, cfg, symbol="LINK/USD", asset="crypto", signal="STOP",
+            action="sell_intent", reason="stop:-8.1%",
+            decided_at="2026-10-16T17:28:05+00:00")
+    ledger.close()
+
+    act = dashboard._activity()
+    assert [r["symbol"] for r in act["last_run"]] == ["AAPL", "BTC/USD", "NFLX"]
+    btc = next(r for r in act["last_run"] if r["symbol"] == "BTC/USD")
+    assert btc["action"] == "sell_intent" and btc["reason"] == "reverse_cross"
+    assert btc["holding"]
+    assert not next(r for r in act["last_run"] if r["symbol"] == "NFLX")["holding"]
+    assert act["source"] == "ledger"
+    assert act["last_when"] == "2026-10-15 18:36"
+    assert "reverse_cross" in dashboard._activity_card(act)
+
+
+def test_ledger_activity_stays_best_effort(dirs):
+    assert dashboard._ledger_activity() is None  # no manifest
+    config_dir = dirs["repo"] / "config"
+    config_dir.mkdir()
+    (config_dir / "run3.yaml").write_text("strategy: [broken")
+    assert dashboard._ledger_activity() is None  # unreadable manifest
+    shutil.copy(ROOT / "config" / "run3.yaml", config_dir / "run3.yaml")
+    assert dashboard._ledger_activity() is None  # manifest, no ledger
+    cfg, ledger = _seed_run(dirs)
+    ledger.close()
+    assert dashboard._ledger_activity() is None  # initialized, no decisions
+    ledger = _seed_run(dirs)[1]
+    _decide(ledger, cfg, decided_at="bogus")
+    ledger.close()
+    assert dashboard._ledger_activity() is None  # no parseable scan clock
+
+
+def test_a_stop_only_ledger_still_shows_the_stop(dirs):
+    cfg, ledger = _seed_run(dirs)
+    _decide(ledger, cfg, symbol="LINK/USD", signal="STOP", action="sell_intent",
+            reason="stop:-8.1%", decided_at="2026-10-08T17:28:05+00:00")
+    ledger.close()
+    act = dashboard._ledger_activity()
+    assert act is not None and act["last_run"][0]["signal"] == "STOP"
+    assert act["last_run"][0]["holding"]
+
+
+def test_a_journal_with_rows_wins_over_the_ledger(dirs):
+    cfg, ledger = _seed_run(dirs)
+    _decide(ledger, cfg, symbol="BTC/USD", signal="SELL", action="sell_intent",
+            reason="reverse_cross")
+    ledger.close()
+    pd.DataFrame([{
+        "timestamp": "bogus", "symbol": "AAPL", "strategy": "sma_cross",
+        "signal": "HOLD", "holding": False, "action": "none",
+    }]).to_csv(dirs["results"] / "paper_journal.csv", index=False)
+    act = dashboard._activity()
+    assert act["last_run"] == []  # journal counts win; the ledger sell stays hidden
+    assert act["last_when"] is None
+    assert "source" not in act

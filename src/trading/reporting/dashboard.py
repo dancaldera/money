@@ -143,14 +143,31 @@ def _coverage() -> list[dict]:
     return rows
 
 
+def _empty_activity() -> dict:
+    return {"counts": {}, "last_run": [], "last_when": None}
+
+
 def _activity() -> dict:
-    """Summarise the paper journal: counts and the most recent scan's signals."""
+    """Most recent scan: the legacy journal, else the live ledger.
+
+    The frozen desk records decisions in the ledger and never writes
+    ``paper_journal.csv``. A journal-only digest then says "nothing logged
+    yet" on the scan that just sold. A journal that has rows still wins —
+    that path is the legacy ``paper-run`` command.
+    """
+    journal = _journal_activity()
+    if journal["last_run"] or journal["counts"]:
+        return journal
+    return _ledger_activity() or journal
+
+
+def _journal_activity() -> dict:
     path = RESULTS_DIR / "paper_journal.csv"
     if not path.exists():
-        return {"counts": {}, "last_run": [], "last_when": None}
+        return _empty_activity()
     df = pd.read_csv(path)
     if df.empty:
-        return {"counts": {}, "last_run": [], "last_when": None}
+        return _empty_activity()
     counts = df["action"].value_counts().to_dict()
     df["ts"] = pd.to_datetime(df["timestamp"], errors="coerce", utc=True)
     # Show the most recent *signal scan* (exclude the stop-loss monitor rows),
@@ -168,6 +185,58 @@ def _activity() -> dict:
     ]
     last_when = last_ts.tz_convert(DISPLAY_TZ).strftime("%Y-%m-%d %H:%M") if pd.notna(last_ts) else None
     return {"counts": counts, "last_run": last_run, "last_when": last_when}
+
+
+def _ledger_activity() -> dict | None:
+    """Latest baseline scan from the live ledger, shaped like a journal scan.
+
+    Crypto and equity close on different ``bar_end`` clocks, so the window is
+    the scan's ``decided_at`` (one run writes both). A later STOP must not
+    hide that scan: it is a different event, and the stop monitor already
+    logs it.
+    """
+    config_path = REPO_DIR / "config" / "run3.yaml"
+    if not config_path.exists():
+        return None
+    try:
+        from ..run2 import RunLedger, load_run_config
+
+        cfg = load_run_config(config_path)
+        ledger_path = RESULTS_DIR / cfg.run_id / "ledger.sqlite"
+        if not ledger_path.exists():
+            return None
+        with RunLedger(ledger_path) as ledger:
+            rows = [dict(r) for r in ledger.decisions(cfg.run_id, portfolio="baseline")]
+    except Exception:  # noqa: BLE001 — the digest must stay best-effort
+        return None
+    if not rows:
+        return None
+    frame = pd.DataFrame(rows)
+    frame["ts"] = pd.to_datetime(frame["decided_at"], errors="coerce", utc=True)
+    scan = frame[frame["signal"] != "STOP"]
+    if scan.empty:
+        scan = frame
+    last_ts = scan["ts"].max()
+    if pd.isna(last_ts):
+        return None
+    last = scan[scan["ts"] >= last_ts - pd.Timedelta(minutes=5)]
+    last = last.drop_duplicates(subset="symbol", keep="last").sort_values("symbol")
+    last_run = [
+        {
+            "symbol": r["symbol"],
+            "signal": r["signal"],
+            "holding": r["reason"] == "holding" or r["signal"] in {"SELL", "STOP"},
+            "action": r["action"],
+            "reason": r["reason"],
+        }
+        for _, r in last.iterrows()
+    ]
+    return {
+        "counts": {},
+        "last_run": last_run,
+        "last_when": last_ts.tz_convert(DISPLAY_TZ).strftime("%Y-%m-%d %H:%M"),
+        "source": "ledger",
+    }
 
 
 def _run2_summary() -> dict | None:
@@ -393,9 +462,10 @@ def _activity_card(act: dict) -> str:
     rows = ""
     for r in act["last_run"]:
         act_cls = "muted" if r["action"] == "none" else "pos"
+        reason = f" ({html.escape(str(r['reason']))})" if r.get("reason") else ""
         rows += (f"<tr><td>{html.escape(str(r['symbol']))}</td>"
                  f"<td>{html.escape(str(r['signal']))}</td>"
-                 f"<td class='{act_cls}'>{html.escape(str(r['action']))}</td></tr>")
+                 f"<td class='{act_cls}'>{html.escape(str(r['action']))}{reason}</td></tr>")
     when = f' &middot; {act["last_when"]}' if act["last_when"] else ""
     return (
         f'<div class="card"><h2>Last scan{when}</h2>'
