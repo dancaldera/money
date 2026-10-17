@@ -187,6 +187,17 @@ def _journal_activity() -> dict:
     return {"counts": counts, "last_run": last_run, "last_when": last_when}
 
 
+def _held_at_scan(reason: object) -> bool:
+    """True only when this scan row was written while the book held the name.
+
+    A down-cross on a name we do not hold is recorded as SELL +
+    ``no_fresh_cross``. Treating every SELL as a holding made the digest
+    list AVAX as held when the book had no AVAX position.
+    """
+    text = str(reason or "")
+    return text == "holding" or text == "reverse_cross" or text.startswith("stop:")
+
+
 def _ledger_activity() -> dict | None:
     """Latest baseline scan from the live ledger, shaped like a journal scan.
 
@@ -225,7 +236,7 @@ def _ledger_activity() -> dict | None:
         {
             "symbol": r["symbol"],
             "signal": r["signal"],
-            "holding": r["reason"] == "holding" or r["signal"] in {"SELL", "STOP"},
+            "holding": _held_at_scan(r["reason"]),
             "action": r["action"],
             "reason": r["reason"],
         }

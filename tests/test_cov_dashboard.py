@@ -290,6 +290,9 @@ def test_digest_reads_the_ledger_scan_when_the_journal_is_absent(dirs):
     _decide(ledger, cfg, symbol="BTC/USD", asset="crypto", signal="SELL",
             action="sell_intent", reason="reverse_cross",
             bar_end="2026-10-15T00:00:00+00:00")
+    _decide(ledger, cfg, symbol="AVAX/USD", asset="crypto", signal="SELL",
+            action="none", reason="no_fresh_cross",
+            bar_end="2026-10-15T00:00:00+00:00")
     _decide(ledger, cfg, symbol="SOL/USD", portfolio="shadow_regime", signal="BUY",
             action="buy_intent", reason="allowed", asset="crypto")
     _decide(ledger, cfg, symbol="LINK/USD", asset="crypto", signal="STOP",
@@ -298,10 +301,14 @@ def test_digest_reads_the_ledger_scan_when_the_journal_is_absent(dirs):
     ledger.close()
 
     act = dashboard._activity()
-    assert [r["symbol"] for r in act["last_run"]] == ["AAPL", "BTC/USD", "NFLX"]
+    assert [r["symbol"] for r in act["last_run"]] == [
+        "AAPL", "AVAX/USD", "BTC/USD", "NFLX"]
     btc = next(r for r in act["last_run"] if r["symbol"] == "BTC/USD")
     assert btc["action"] == "sell_intent" and btc["reason"] == "reverse_cross"
     assert btc["holding"]
+    avax = next(r for r in act["last_run"] if r["symbol"] == "AVAX/USD")
+    assert avax["signal"] == "SELL" and not avax["holding"]
+    assert next(r for r in act["last_run"] if r["symbol"] == "AAPL")["holding"]
     assert not next(r for r in act["last_run"] if r["symbol"] == "NFLX")["holding"]
     assert act["source"] == "ledger"
     assert act["last_when"] == "2026-10-15 18:36"
