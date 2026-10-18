@@ -204,8 +204,9 @@ def _render_text(ctx: dict) -> str:
         for r in rows:
             mark = "" if r["action"] == "none" else "   <-- ACTION"
             reason = f"  reason={r['reason']}" if r.get("reason") else ""
+            as_of = f"  as_of={r['as_of']}" if r.get("as_of") else ""
             w(f"    {r['symbol']:<10} signal={r['signal']:<7} holding={str(r['holding']):<5} "
-              f"action={r['action']}{reason}{mark}")
+              f"action={r['action']}{reason}{as_of}{mark}")
     else:
         w("  nothing logged yet")
 
@@ -356,9 +357,10 @@ def _render_html(ctx: dict) -> str:
     for r in act.get("last_run") or []:
         color = _C["green"] if r["action"] != "none" else _C["grey"]
         reason = f" · {esc(str(r['reason']))}" if r.get("reason") else ""
+        as_of = f" · as of {esc(str(r['as_of']))}" if r.get("as_of") else ""
         scan_rows += _tds(esc(str(r["symbol"])), esc(str(r["signal"])),
                           esc(str(r["holding"])),
-                          (f'<span style="color:{color}">{esc(str(r["action"]))}{reason}</span>', ""))
+                          (f'<span style="color:{color}">{esc(str(r["action"]))}{reason}{as_of}</span>', ""))
     if scan_rows:
         source = f' · {esc(str(act["source"]))}' if act.get("source") else ""
         sub = f' · {act["last_when"]}' if act.get("last_when") else ""

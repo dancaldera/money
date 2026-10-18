@@ -198,14 +198,69 @@ def _held_at_scan(reason: object) -> bool:
     return text == "holding" or text == "reverse_cross" or text.startswith("stop:")
 
 
-def _ledger_activity() -> dict | None:
-    """Latest baseline scan from the live ledger, shaped like a journal scan.
+_SCAN_WINDOW = pd.Timedelta(minutes=5)
 
-    Crypto and equity close on different ``bar_end`` clocks, so the window is
-    the scan's ``decided_at`` (one run writes both). A later STOP must not
-    hide that scan: it is a different event, and the stop monitor already
-    logs it.
+
+def _display_clock(ts) -> str:
+    return ts.tz_convert(DISPLAY_TZ).strftime("%Y-%m-%d %H:%M")
+
+
+def _scan_row(record, *, as_of: str | None) -> dict:
+    row = {
+        "symbol": record["symbol"],
+        "signal": record["signal"],
+        "holding": _held_at_scan(record["reason"]),
+        "action": record["action"],
+        "reason": record["reason"],
+    }
+    if as_of:
+        row["as_of"] = as_of
+    return row
+
+
+def _latest_scan_rows(frame: pd.DataFrame) -> tuple[list[dict], object] | None:
+    """Newest scan cluster, plus the other clock's last row marked ``as_of``.
+
+    Crypto and equity close on different clocks, and a bar already in the
+    ledger is not rewritten. The 5-minute window around the newest
+    ``decided_at`` is therefore only the asset class that had a new bar — a
+    weekend digest was listing eight cryptos and hiding the equity book.
+    Carry every other symbol's latest scan row, stamped with when it was
+    actually decided. A later STOP suppresses that carry: the name is no
+    longer held, and the stop monitor already logged the exit. A STOP never
+    replaces the newest scan itself.
     """
+    scan = frame[frame["signal"] != "STOP"]
+    stops_only = scan.empty
+    if stops_only:
+        scan = frame
+    last_ts = scan["ts"].max()
+    if pd.isna(last_ts):
+        return None
+    window = (
+        scan[scan["ts"] >= last_ts - _SCAN_WINDOW]
+        .drop_duplicates(subset="symbol", keep="last")
+    )
+    rows = [_scan_row(record, as_of=None) for _, record in window.iterrows()]
+    if not stops_only:
+        older = scan[
+            (scan["ts"] < last_ts - _SCAN_WINDOW) & ~scan["symbol"].isin(set(window["symbol"]))
+        ]
+        stops = frame[frame["signal"] == "STOP"]
+        if not older.empty:
+            latest = older.loc[older.groupby("symbol")["ts"].idxmax()]
+            for _, record in latest.iterrows():
+                if not stops.empty:
+                    sym_stops = stops[stops["symbol"] == record["symbol"]]
+                    if not sym_stops.empty and sym_stops["ts"].max() > record["ts"]:
+                        continue
+                rows.append(_scan_row(record, as_of=_display_clock(record["ts"])))
+    rows.sort(key=lambda item: item["symbol"])
+    return rows, last_ts
+
+
+def _ledger_activity() -> dict | None:
+    """Latest baseline scan from the live ledger, shaped like a journal scan."""
     config_path = REPO_DIR / "config" / "run3.yaml"
     if not config_path.exists():
         return None
@@ -224,28 +279,14 @@ def _ledger_activity() -> dict | None:
         return None
     frame = pd.DataFrame(rows)
     frame["ts"] = pd.to_datetime(frame["decided_at"], errors="coerce", utc=True)
-    scan = frame[frame["signal"] != "STOP"]
-    if scan.empty:
-        scan = frame
-    last_ts = scan["ts"].max()
-    if pd.isna(last_ts):
+    scanned = _latest_scan_rows(frame)
+    if scanned is None:
         return None
-    last = scan[scan["ts"] >= last_ts - pd.Timedelta(minutes=5)]
-    last = last.drop_duplicates(subset="symbol", keep="last").sort_values("symbol")
-    last_run = [
-        {
-            "symbol": r["symbol"],
-            "signal": r["signal"],
-            "holding": _held_at_scan(r["reason"]),
-            "action": r["action"],
-            "reason": r["reason"],
-        }
-        for _, r in last.iterrows()
-    ]
+    last_run, last_ts = scanned
     return {
         "counts": {},
         "last_run": last_run,
-        "last_when": last_ts.tz_convert(DISPLAY_TZ).strftime("%Y-%m-%d %H:%M"),
+        "last_when": _display_clock(last_ts),
         "source": "ledger",
     }
 
@@ -474,9 +515,10 @@ def _activity_card(act: dict) -> str:
     for r in act["last_run"]:
         act_cls = "muted" if r["action"] == "none" else "pos"
         reason = f" ({html.escape(str(r['reason']))})" if r.get("reason") else ""
+        as_of = f" · as of {html.escape(str(r['as_of']))}" if r.get("as_of") else ""
         rows += (f"<tr><td>{html.escape(str(r['symbol']))}</td>"
                  f"<td>{html.escape(str(r['signal']))}</td>"
-                 f"<td class='{act_cls}'>{html.escape(str(r['action']))}{reason}</td></tr>")
+                 f"<td class='{act_cls}'>{html.escape(str(r['action']))}{reason}{as_of}</td></tr>")
     when = f' &middot; {act["last_when"]}' if act["last_when"] else ""
     return (
         f'<div class="card"><h2>Last scan{when}</h2>'

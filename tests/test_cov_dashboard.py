@@ -280,7 +280,7 @@ def _decide(ledger, cfg, **overrides):
 
 
 def test_digest_reads_the_ledger_scan_when_the_journal_is_absent(dirs):
-    """Crypto and equity close on different bar clocks; one scan writes both."""
+    """One scan writes only the clock that had a new bar; the other is carried."""
     cfg, ledger = _seed_run(dirs)
     _decide(ledger, cfg, symbol="MSFT", reason="no_fresh_cross",
             decided_at="2026-10-14T00:36:00+00:00", bar_end="2026-10-13T04:00:00+00:00")
@@ -302,17 +302,22 @@ def test_digest_reads_the_ledger_scan_when_the_journal_is_absent(dirs):
 
     act = dashboard._activity()
     assert [r["symbol"] for r in act["last_run"]] == [
-        "AAPL", "AVAX/USD", "BTC/USD", "NFLX"]
+        "AAPL", "AVAX/USD", "BTC/USD", "MSFT", "NFLX"]
     btc = next(r for r in act["last_run"] if r["symbol"] == "BTC/USD")
     assert btc["action"] == "sell_intent" and btc["reason"] == "reverse_cross"
-    assert btc["holding"]
+    assert btc["holding"] and "as_of" not in btc
     avax = next(r for r in act["last_run"] if r["symbol"] == "AVAX/USD")
     assert avax["signal"] == "SELL" and not avax["holding"]
     assert next(r for r in act["last_run"] if r["symbol"] == "AAPL")["holding"]
     assert not next(r for r in act["last_run"] if r["symbol"] == "NFLX")["holding"]
+    # Equity bar already recorded two days earlier: carried, not dropped, and
+    # stamped with its own clock so it is not mistaken for this scan.
+    msft = next(r for r in act["last_run"] if r["symbol"] == "MSFT")
+    assert msft["reason"] == "no_fresh_cross" and msft["as_of"] == "2026-10-13 18:36"
     assert act["source"] == "ledger"
     assert act["last_when"] == "2026-10-15 18:36"
     assert "reverse_cross" in dashboard._activity_card(act)
+    assert "as of 2026-10-13 18:36" in dashboard._activity_card(act)
 
 
 def test_ledger_activity_stays_best_effort(dirs):
@@ -330,6 +335,40 @@ def test_ledger_activity_stays_best_effort(dirs):
     _decide(ledger, cfg, decided_at="bogus")
     ledger.close()
     assert dashboard._ledger_activity() is None  # no parseable scan clock
+
+
+def test_a_later_stop_is_not_carried_as_still_held(dirs):
+    """A STOP after the last scan closes the carry; an older STOP does not."""
+    cfg, ledger = _seed_run(dirs)
+    _decide(ledger, cfg, symbol="NVDA", reason="holding",
+            decided_at="2026-10-14T00:36:00+00:00")
+    _decide(ledger, cfg, symbol="NVDA", signal="STOP", action="sell_intent",
+            reason="stop:-8.1%", decided_at="2026-10-15T17:28:05+00:00")
+    _decide(ledger, cfg, symbol="LINK/USD", asset="crypto", signal="STOP",
+            action="sell_intent", reason="stop:-8.1%",
+            decided_at="2026-10-13T17:28:05+00:00")
+    _decide(ledger, cfg, symbol="LINK/USD", asset="crypto", reason="no_fresh_cross",
+            decided_at="2026-10-14T00:36:00+00:00", bar_end="2026-10-13T00:00:00+00:00")
+    _decide(ledger, cfg, symbol="AAVE/USD", asset="crypto", reason="holding",
+            decided_at="2026-10-16T00:36:43+00:00", bar_end="2026-10-15T00:00:00+00:00")
+    ledger.close()
+
+    act = dashboard._ledger_activity()
+    assert act is not None
+    assert [r["symbol"] for r in act["last_run"]] == ["AAVE/USD", "LINK/USD"]
+    assert "as_of" not in act["last_run"][0]
+    link = act["last_run"][1]
+    assert link["reason"] == "no_fresh_cross" and link["as_of"] == "2026-10-13 18:36"
+    assert act["last_when"] == "2026-10-15 18:36"
+
+
+def test_a_single_scan_cluster_carries_nothing(dirs):
+    cfg, ledger = _seed_run(dirs)
+    _decide(ledger, cfg, symbol="AAPL", reason="holding")
+    ledger.close()
+    act = dashboard._ledger_activity()
+    assert act is not None
+    assert len(act["last_run"]) == 1 and "as_of" not in act["last_run"][0]
 
 
 def test_a_stop_only_ledger_still_shows_the_stop(dirs):

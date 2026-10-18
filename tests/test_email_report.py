@@ -126,3 +126,12 @@ def test_digest_prints_a_ledger_scan_reason(ctx):
     assert "reason=reverse_cross" in text and "<-- ACTION" in text
     assert "sell_intent · reverse_cross" in body
     assert "Last scan — sma_cross · ledger" in body
+    assert "as_of=" not in text
+
+    ctx["activity"]["last_run"].append({
+        "symbol": "NVDA", "signal": "HOLD", "holding": True,
+        "action": "none", "reason": "holding", "as_of": "2026-10-16 18:35",
+    })
+    _, text, body = er.build_digest(ctx)
+    assert "as_of=2026-10-16 18:35" in text
+    assert "as of 2026-10-16 18:35" in body
