@@ -16,6 +16,18 @@ from .risk import DRAWDOWN_HALT_PREFIX, drawdown_pct, halt_action
 from .sizing import entry_notional
 
 
+def profit_target(entry_price: float, take_profit_pct: float | None) -> float | None:
+    """Fill-derived profit target, or ``None`` when the experiment knob is off.
+
+    ``None``, 0, and below all mean off — the same falsey contract as
+    ``protective_stop``. A live run pins the knob to None, so this level is
+    never installed outside ``portfolio-backtest``.
+    """
+    if not take_profit_pct or take_profit_pct <= 0:
+        return None
+    return entry_price * (1 + take_profit_pct / 100)
+
+
 def protective_stop(entry_price: float, stop_loss_pct: float) -> float | None:
     """Fill-derived protective stop level, or ``None`` when the stop is disabled.
 
@@ -261,6 +273,40 @@ def simulate_portfolio(
             # Arms the experiment-only re-entry window (inert while the knob is
             # None, which is every live run) — and never a same-bar re-entry.
             stopped_on[symbol] = day
+
+        # Experiment-only profit target (None on every live run). Intraday, like
+        # the stop: a gap through the target fills at the open (the favorable
+        # gap); a bar that only trades through it fills at the resting level.
+        # The stop loop already ran, so a bar that prints both is a stop — the
+        # tape order is unknowable, and booking the loss is the conservative
+        # read. A take-profit does not arm ``stopped_on``: it is not a stop, and
+        # the frozen fresh-cross rule still gates the next entry.
+        tp = cfg.strategy.take_profit_pct
+        if tp:
+            for symbol in sorted(list(positions)):
+                frame = indexed[symbol]
+                if day not in frame.index:
+                    continue
+                row = frame.loc[day]
+                if isinstance(row, pd.DataFrame):
+                    row = row.iloc[0]
+                pos = positions[symbol]
+                target = profit_target(pos.entry, tp)
+                assert target is not None  # the loop only runs when the knob is set
+                if float(row["High"]) < target:
+                    continue
+                open_price = float(row["Open"])
+                exit_price = open_price if open_price >= target else target
+                gross = pos.qty * exit_price
+                fee = gross * _cost_rate(cfg, pos.asset)
+                cash += gross - fee
+                realized = (exit_price - pos.entry) * pos.qty - pos.entry_fee - fee
+                trade_rows.append({
+                    "date": day, "symbol": symbol, "asset": pos.asset, "side": "sell",
+                    "qty": pos.qty, "price": exit_price, "fee": fee,
+                    "realized_pl": realized, "reason": "take_profit",
+                })
+                del positions[symbol]
 
         # Experiment-only stop refinements (both knobs None on every live run):
         # track each position's highest close and optionally raise the stop to

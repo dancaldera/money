@@ -48,6 +48,7 @@ VALID_CRYPTO = ["BTC/USD", "ETH/USD", "SOL/USD", "LTC/USD", "LINK/USD", "DOGE/US
         (lambda raw: raw["strategy"].update(stop_breakeven_at_pct=-1), "stop_breakeven_at_pct must be positive"),
         (lambda raw: raw["strategy"].update(entry_min_separation_pct=0), "entry_min_separation_pct must be positive"),
         (lambda raw: raw["strategy"].update(stop_reentry_bars=0), "stop_reentry_bars must be positive"),
+        (lambda raw: raw["strategy"].update(take_profit_pct=0), "take_profit_pct must be positive"),
         (lambda raw: raw["strategy"].update(stop_reentry_bars=5), "frozen values changed"),
         (lambda raw: raw["strategy"].update(require_fresh_cross_after_stop=False), "fresh SMA cross"),
         (lambda raw: _set_crypto_symbols(raw, ["BTC/USD", *VALID_CRYPTO[1:-1], "XRP/USD"]), "17-symbol baseline"),

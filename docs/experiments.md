@@ -1232,3 +1232,72 @@ for r in ["exp-slots-all-recover","exp-tilt-ms080","exp-tilt-ms120","exp-tilt-ms
           tr[tr.side=="sell"].groupby("asset").realized_pl.sum().to_dict())
 PY
 ```
+
+## Measured: a resting take-profit — it clips the winners (one clock, 2022-01-01 → 2026-10-18)
+
+The dual of the stop width. External guides keep recommending a fixed reward target
+on a crossover (2:1 against the stop, a 2.2:1 golden-cross target, an ATR target
+plus a fixed take-profit). The live book just handed one back — AAVE was marked
+above +10% and exited the reverse cross at +8.7% — which is the anecdote that
+makes a target look obvious. A ninth experiment-only knob prices it:
+`take_profit_pct` exits when the day's high trades through `entry * (1 + X/100)`.
+The fill is the optimistic one (a gap through the level fills at the open; a bar
+that only trades through it fills at the resting level). The stop loop runs first,
+so a bar that prints both is booked as the stop. `None` is the frozen rule. The
+knob is pinned absent on every live run by the same frozen check as the other
+eight (`tests/test_run2_experiments.py::test_live_runs_pin_the_experiment_stop_knobs`).
+A take-profit does not arm the re-entry window: the fresh-cross rule still gates
+the next entry, which is the whole point of measuring it in the replay rather
+than on the trades the control already took.
+
+Same clock, control re-replayed in the same sitting (`exp-tp-control` is the
+`exp-slots-all-recover` values under a new id, so the historical artifact is not
+overwritten). `analysis_experiment_table.py` confirms one clock,
+2022-01-01..2026-10-18.
+
+| manifest | target | return | maxDD | ret/DD | trades | win% | expectancy | total | Sharpe | PF | DSR |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| `exp-tp-control` | off | **+10.25%** | -2.79% | **3.67** | 369 | 30.4% | **$26.74** | **$9,866** | **0.765** | **1.90** | **0.909** |
+| `exp-tp-24` | 24% | +2.88% | -2.01% | 1.43 | 397 | 33.0% | $7.36 | $2,924 | 0.577 | 1.26 | 0.661 |
+| `exp-tp-16` | 16% | +0.91% | -1.72% | 0.53 | 405 | 36.0% | $2.35 | $952 | 0.217 | 1.09 | 0.353 |
+| `exp-tp-12` | 12% | +0.56% | -1.39% | 0.40 | 412 | 40.3% | $1.46 | $602 | 0.155 | 1.06 | 0.304 |
+| `exp-tp-8` | 8% | -0.04% | -1.29% | -0.03 | 422 | 48.6% | $0.04 | $17 | -0.009 | 1.00 | 0.191 |
+
+**Monotone, and the win-rate rise is the trap.** Tightening the target raises the
+win rate from 30% to 49% and cuts the drawdown, and it destroys the dollars.
+Sharpe, profit factor and DSR fall with the target — the drawdown improvement is
+not a risk-adjusted bargain (at 8% Sharpe goes negative; at 24% it is 0.577
+against the control's 0.765). Exit mix on this clock: control 193 crosses / 176
+stops; the 8% target takes 192 of its 422 exits and leaves 75 crosses.
+
+The marginal lens says why the freed slots cannot save it
+(`analysis_marginal_trades.py --control exp-tp-control`):
+
+| target | added trips | added $ (x control expectancy) | dropped trips | dropped $ | net |
+|---|---|---|---|---|---|
+| 8% | +212 | +$8,735 (1.54x) | -159 | +$18,584 | **-$9,945** |
+| 12% | +168 | +$10,003 (2.23x) | -125 | +$19,268 | **-$9,337** |
+| 16% | +136 | +$10,676 (2.94x) | -100 | +$19,590 | **-$8,968** |
+| 24% | +105 | +$12,476 (4.44x) | -77 | +$19,419 | **-$6,979** |
+
+The added round trips earn *above* the desk's average — the slot does get reused,
+and the new crossings are not the bad ones. They still cannot replace the tail
+the target clipped ($18.6k–$19.6k of dropped trips at every width). That is the
+same lesson as the whipsaw gate, from the exit side: the scarce resource is
+letting the crossings you already have run, not manufacturing a higher win rate.
+
+A next-open fill would be worse than this table, not better — the replay already
+gives the target its best plausible print (intraday high, favorable gap kept).
+Do not re-open "take profit at 2:1" or "bank AAVE when it is up 10%". The knob
+exists so a live manifest cannot grow the field by accident; it is pinned to
+`None`, and it loses at every width that was priced.
+
+```bash
+for m in exp-tp-control exp-tp-8 exp-tp-12 exp-tp-16 exp-tp-24; do
+  .venv/bin/money portfolio-backtest --run-config config/experiments/$m.yaml
+done
+.venv/bin/python scripts/analysis_experiment_table.py exp-tp-control \
+    exp-tp-8 exp-tp-12 exp-tp-16 exp-tp-24
+.venv/bin/python scripts/analysis_marginal_trades.py --control exp-tp-control \
+    exp-tp-8 exp-tp-12 exp-tp-16 exp-tp-24
+```

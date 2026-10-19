@@ -211,7 +211,7 @@ def test_live_values_under_another_run_id_stay_non_live(tmp_path):
 
 def test_live_runs_pin_the_experiment_stop_knobs(tmp_path):
     """Stop/entry refinements may never appear on a live run."""
-    for knob in ("stop_trail_pct", "stop_breakeven_at_pct", "entry_min_separation_pct", "stop_reentry_bars"):
+    for knob in ("stop_trail_pct", "stop_breakeven_at_pct", "entry_min_separation_pct", "stop_reentry_bars", "take_profit_pct"):
         path = _manifest(tmp_path, lambda raw, k=knob: _run3_values(raw)["strategy"].update({k: 6}))
         with pytest.raises(RunConfigError, match="frozen values changed"):
             load_run_config(path)

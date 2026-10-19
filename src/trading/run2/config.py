@@ -41,6 +41,7 @@ _FROZEN_BASELINES: dict[str, dict[str, float | int | None]] = {
         "stop_trail_pct": None,
         "entry_min_separation_pct": None,
         "stop_reentry_bars": None,
+        "take_profit_pct": None,
         "position_notional": 625,
         "max_positions": 8,
         "max_gross_exposure": 5_000,
@@ -74,6 +75,7 @@ _FROZEN_BASELINES: dict[str, dict[str, float | int | None]] = {
         "stop_trail_pct": None,
         "entry_min_separation_pct": None,
         "stop_reentry_bars": None,
+        "take_profit_pct": None,
         "position_notional": 625,
         "max_positions": 17,
         "max_gross_exposure": 10_625,
@@ -123,6 +125,12 @@ class StrategyConfig:
     # the alternative can only be measured through portfolio-backtest until a
     # human opens a run that carries it.
     stop_reentry_bars: int | None = None
+    # Experiment-only profit target: exit when the day's high trades through
+    # entry * (1 + X/100). None = the frozen rule (exit only on the reverse
+    # cross or the protective stop). Pinned to None on every live run — a
+    # resting target can only be measured through portfolio-backtest until a
+    # human opens a run that carries it.
+    take_profit_pct: float | None = None
 
 
 @dataclass(frozen=True)
@@ -307,7 +315,13 @@ def _validate(cfg: RunConfig, *, strict: bool = True) -> None:
     recovery_days = cfg.portfolio.halt_recovery_days
     if recovery_days is not None and recovery_days <= 0:
         raise RunConfigError("halt_recovery_days must be positive")
-    for name in ("stop_breakeven_at_pct", "stop_trail_pct", "entry_min_separation_pct", "stop_reentry_bars"):
+    for name in (
+        "stop_breakeven_at_pct",
+        "stop_trail_pct",
+        "entry_min_separation_pct",
+        "stop_reentry_bars",
+        "take_profit_pct",
+    ):
         value = getattr(cfg.strategy, name)
         if value is not None and value <= 0:
             raise RunConfigError(f"{name} must be positive when set")
@@ -377,6 +391,10 @@ def _validate(cfg: RunConfig, *, strict: bool = True) -> None:
         "stop_reentry_bars": (
             cfg.strategy.stop_reentry_bars,
             baseline["stop_reentry_bars"],
+        ),
+        "take_profit_pct": (
+            cfg.strategy.take_profit_pct,
+            baseline["take_profit_pct"],
         ),
         "position_notional": (cfg.portfolio.position_notional, baseline["position_notional"]),
         "max_positions": (cfg.portfolio.max_positions, baseline["max_positions"]),

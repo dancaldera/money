@@ -14,6 +14,7 @@ from trading.run2.portfolio import (
     block_bootstrap_mean_ci,
     deflated_sharpe_probability,
     primary_benchmark,
+    profit_target,
     protective_stop,
     simulate_portfolio,
 )
@@ -249,6 +250,89 @@ def test_protective_stop_disabled_at_or_below_zero(pct):
 
 def test_protective_stop_is_fill_derived():
     assert protective_stop(200.0, 8) == pytest.approx(184.0)
+
+
+@pytest.mark.parametrize("pct", [None, 0, 0.0, -5])
+def test_profit_target_disabled_when_unset_or_non_positive(pct):
+    assert profit_target(100.0, pct) is None
+
+
+def test_profit_target_is_fill_derived():
+    assert profit_target(200.0, 8) == pytest.approx(216.0)
+
+
+def test_simulator_take_profit_exits_at_the_resting_level_not_the_cross():
+    """A high through the target closes at the target; the control keeps holding.
+
+    The target bar's open is under the level, so this is the resting fill, not
+    the gap. A duplicated index row exercises the DataFrame-row path.
+    """
+    base = run2_config()
+    cfg = replace(base, strategy=replace(base.strategy, take_profit_pct=10))
+    close = [10.0] * 30 + [9.0, 20.0] + [21.0] * 12
+    opens = list(close)
+    opens[32] = 20.0  # fill the cross at 20
+    opens[36] = 21.0  # under the 22 target
+    frame = ohlcv(close, opens=opens)
+    frame.loc[frame.index[36], "High"] = 23.0
+    frame.loc[frame.index[36], "Low"] = 20.5  # above the 8% stop at 18.4
+    duped = pd.concat([frame, frame.iloc[[36], :]]).sort_index()
+    sim = simulate_portfolio(cfg, {"AAPL": duped})
+    sells = sim.trades[sim.trades["side"] == "sell"]
+    assert len(sells) == 1 and sells.iloc[0]["reason"] == "take_profit"
+    assert sells.iloc[0]["price"] == pytest.approx(22.0)
+    control = simulate_portfolio(base, {"AAPL": frame})
+    assert (control.trades["side"] == "sell").sum() == 0
+
+
+def test_simulator_take_profit_gap_fills_at_the_open():
+    base = run2_config()
+    cfg = replace(base, strategy=replace(base.strategy, take_profit_pct=10))
+    close = [10.0] * 30 + [9.0, 20.0, 21.0] + [24.0] * 6
+    opens = list(close)
+    opens[32] = 20.0  # entry bar stays under the 22 target (close 21)
+    opens[33] = 23.0  # next session gaps through it
+    frame = ohlcv(close, opens=opens)
+    sim = simulate_portfolio(cfg, {"AAPL": frame})
+    sell = sim.trades[sim.trades["side"] == "sell"].iloc[0]
+    assert sell["reason"] == "take_profit"
+    assert sell["price"] == pytest.approx(23.0)
+
+
+def test_simulator_stop_wins_when_the_same_bar_trades_through_both():
+    """Tape order is unknowable; the stop loop runs first and books the loss."""
+    base = run2_config()
+    cfg = replace(base, strategy=replace(base.strategy, take_profit_pct=10))
+    close = [10.0] * 30 + [9.0, 20.0] + [21.0] * 8
+    opens = list(close)
+    opens[32] = 20.0
+    opens[35] = 20.0
+    frame = ohlcv(close, opens=opens)
+    frame.loc[frame.index[35], "High"] = 23.0
+    frame.loc[frame.index[35], "Low"] = 18.0  # through the 18.4 stop
+    sim = simulate_portfolio(cfg, {"AAPL": frame})
+    sell = sim.trades[sim.trades["side"] == "sell"].iloc[0]
+    assert sell["reason"] == "stop"
+    assert sell["price"] == pytest.approx(18.4)
+
+
+def test_simulator_take_profit_skips_a_symbol_missing_that_day():
+    """A held name with no bar is left alone; the other name's day still runs."""
+    base = run2_config()
+    cfg = replace(base, strategy=replace(base.strategy, take_profit_pct=10))
+    close = [10.0] * 30 + [9.0, 20.0] + [21.0] * 8
+    opens = list(close)
+    opens[32] = 20.0
+    held = ohlcv(close, opens=opens)
+    # Drop the day after entry so the union calendar (the other symbol) visits
+    # a session this name does not have, while the position is already open.
+    gap_day = held.index[33]
+    held = held.drop(index=gap_day)
+    other = ohlcv([10.0] * len(close), start="2026-01-01")
+    sim = simulate_portfolio(cfg, {"AAPL": held, "MSFT": other})
+    assert (sim.trades["symbol"] == "AAPL").any()
+    reasons = sim.trades["reason"] if "reason" in sim.trades.columns else []
+    assert "take_profit" not in set(pd.Series(reasons).dropna())
 
 
 def test_replay_with_a_disabled_stop_holds_instead_of_stopping_at_entry():
