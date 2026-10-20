@@ -1301,3 +1301,65 @@ done
 .venv/bin/python scripts/analysis_marginal_trades.py --control exp-tp-control \
     exp-tp-8 exp-tp-12 exp-tp-16 exp-tp-24
 ```
+
+## Measured: a time stop — the long holds are the P&L (one clock, 2022-01-01 → 2026-10-19)
+
+The other exit-side anecdote. Winners on the control hold a median 48 days and
+losers a median 6, so "cut the slow names" looks like it would drop the stops
+and keep the crosses. It does the opposite: the stops already leave, and the
+dollars live in the holds past 40 sessions. A tenth experiment-only knob prices
+it: `max_hold_bars` exits at the next open after N of the symbol's own sessions
+(a missing bar is not a session; the same fill path as a reverse cross). The
+stop loop runs first, so a bar that also trades through the 8% stop is a stop.
+A time stop does not arm the re-entry window. `None` is the frozen rule. The
+knob is pinned absent on every live run by the same frozen check
+(`tests/test_run2_experiments.py::test_live_runs_pin_the_experiment_stop_knobs`).
+
+Same clock, control replayed in the same sitting. `analysis_experiment_table.py`
+confirms one clock, 2022-01-01..2026-10-19. External: a NAAIM trend study finds
+no benefit to a time-stop alongside a trend-following exit — the exit is the
+counter-signal (Reiss, *Trend, Emotion, Timing*, NAAIM 2025).
+
+| manifest | N | return | maxDD | ret/DD | trades | win% | expectancy | total | Sharpe | PF | DSR |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| `exp-hold-control` | off | **+10.33%** | -2.79% | **3.70** | 370 | 30.5% | **$26.83** | **$9,928** | **0.770** | **1.90** | 0.913 |
+| `exp-hold-60` | 60 | +9.60% | -2.79% | 3.44 | 379 | 31.1% | $24.85 | $9,417 | 0.733 | 1.85 | 0.901 |
+| `exp-hold-40` | 40 | +9.51% | -2.77% | 3.43 | 382 | 30.9% | $24.43 | $9,332 | 0.754 | 1.83 | **0.932** |
+| `exp-hold-20` | 20 | +6.34% | -2.24% | 2.84 | 398 | 37.7% | $16.02 | $6,378 | 0.561 | 1.59 | 0.828 |
+| `exp-hold-10` | 10 | +5.13% | -1.54% | 3.33 | 408 | 42.2% | $12.57 | $5,127 | 0.495 | 1.56 | 0.814 |
+
+**Monotone in the dollars, and the win-rate rise is the same trap as the target.**
+Tightening the cap raises the win rate from 30% to 42% and, only at the tight
+end, cuts the drawdown. Sharpe and profit factor fall with it. N=40 is the one
+row whose DSR ticks up (0.932 vs 0.913) and it still costs $608 of net P&L at
+an unchanged drawdown — not a risk bargain. Exit mix: control 194 crosses / 176
+stops; the 10-session cap takes 222 of its 408 exits and leaves 44 crosses.
+
+The marginal lens says the freed slots are not the problem
+(`analysis_marginal_trades.py --control exp-hold-control`):
+
+| N | added trips | added $ (x control expectancy) | dropped trips | dropped $ | net |
+|---|---|---|---|---|---|
+| 10 | +233 | +$12,907 (2.06x) | -195 | +$17,709 | **-$4,857** |
+| 20 | +169 | +$16,325 (3.60x) | -141 | +$19,906 | **-$3,616** |
+| 40 | +66 | +$16,992 (9.59x) | -54 | +$17,588 | **-$608** |
+| 60 | +36 | +$8,793 (9.10x) | -27 | +$9,305 | **-$519** |
+
+The added round trips earn *above* the desk's average — at 40 and 60 sessions,
+far above it. They still cannot replace the tail the cap clipped. That is the
+take-profit lesson again, from the calendar side: the scarce resource is letting
+the crossings you already have run. N=10 buys 1.25pp of max drawdown at about
+$3.9k per point, a worse exchange than volatility targeting, and ret/DD still
+falls (3.33 vs 3.70). Do not re-open "cut the slow names" or "time-stop a name
+that has not moved". The knob exists so a live manifest cannot grow the field
+by accident; it is pinned to `None`, and it loses at every width that was priced.
+
+```bash
+for m in exp-hold-control exp-hold-10 exp-hold-20 exp-hold-40 exp-hold-60; do
+  .venv/bin/money portfolio-backtest --run-config config/experiments/$m.yaml
+done
+.venv/bin/python scripts/analysis_experiment_table.py exp-hold-control \
+    exp-hold-10 exp-hold-20 exp-hold-40 exp-hold-60
+.venv/bin/python scripts/analysis_marginal_trades.py --control exp-hold-control \
+    exp-hold-10 exp-hold-20 exp-hold-40 exp-hold-60
+```

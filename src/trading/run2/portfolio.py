@@ -52,6 +52,7 @@ class SimPosition:
     stop: float | None  # None = no protective stop (manifest stop_loss_pct 0)
     entry_fee: float
     peak: float = 0.0  # highest close since entry (drives experiment trail/breakeven stops)
+    bars_held: int = 0  # own sessions completed; only the experiment time stop reads it
 
 
 @dataclass
@@ -64,6 +65,9 @@ class PendingIntent:
     # Notional fixed at signal time (risk-scaled when the experiment knob is set,
     # otherwise the flat position_notional). Sells carry 0 — they close a position.
     notional: float = 0.0
+    # Set only by an experiment exit (a time stop). A reverse-cross sell leaves
+    # this empty so the trade row stays reason-less, matching the frozen path.
+    reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -248,7 +252,10 @@ def simulate_portfolio(
                     fee = gross * _cost_rate(cfg, pos.asset)
                     cash += gross - fee
                     realized = (open_price - pos.entry) * pos.qty - pos.entry_fee - fee
-                    trade_rows.append({"date": day, "symbol": symbol, "asset": pos.asset, "side": "sell", "qty": pos.qty, "price": open_price, "fee": fee, "realized_pl": realized})
+                    row = {"date": day, "symbol": symbol, "asset": pos.asset, "side": "sell", "qty": pos.qty, "price": open_price, "fee": fee, "realized_pl": realized}
+                    if intent.reason:
+                        row["reason"] = intent.reason
+                    trade_rows.append(row)
             del pending[symbol]
 
         # Intraday stop approximation: gap at open, otherwise the fill-derived
@@ -413,6 +420,19 @@ def simulate_portfolio(
             elif signal == "SELL" and symbol in positions and symbol not in pending:
                 pending[symbol] = PendingIntent(symbol, asset, "sell", price, day)
                 action = "sell_intent"
+            # Experiment-only time stop (None on every live run). Count this
+            # symbol's own sessions — a missing bar is not a session — and queue
+            # the sell for the next open, the same path as a reverse cross. The
+            # stop and take-profit loops already ran, so a bar that also hits
+            # those is not relabeled. A reverse cross that already queued a sell
+            # keeps that reason. This exit does not arm ``stopped_on``.
+            hold_bars = cfg.strategy.max_hold_bars
+            if hold_bars and symbol in positions:
+                pos = positions[symbol]
+                pos.bars_held += 1
+                if pos.bars_held >= hold_bars and symbol not in pending:
+                    pending[symbol] = PendingIntent(symbol, asset, "sell", price, day, reason="time_stop")
+                    action = "time_stop"
             decision_rows.append({"date": day, "symbol": symbol, "asset": asset, "signal": signal, "action": action, "price": price, "blocked_by": blocked_by})
 
         equity = cash + sum(p.qty * last_prices.get(s, p.entry) for s, p in positions.items())

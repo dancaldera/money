@@ -335,6 +335,76 @@ def test_simulator_take_profit_skips_a_symbol_missing_that_day():
     assert "take_profit" not in set(pd.Series(reasons).dropna())
 
 
+def _held_frame(n_after=12, entry_open=20.0):
+    """A fresh cross that fills at ``entry_open`` and then just holds."""
+    close = [10.0] * 30 + [9.0, 20.0] + [21.0] * n_after
+    opens = list(close)
+    opens[32] = entry_open
+    return ohlcv(close, opens=opens)
+
+
+def test_simulator_time_stop_exits_at_the_next_open():
+    """N own sessions, then the next open — not the close, and not the control."""
+    base = run2_config()
+    cfg = replace(base, strategy=replace(base.strategy, max_hold_bars=3))
+    frame = _held_frame()
+    frame.loc[frame.index[35], "Open"] = 21.5
+    sim = simulate_portfolio(cfg, {"AAPL": frame})
+    sells = sim.trades[sim.trades["side"] == "sell"]
+    assert len(sells) == 1
+    assert sells.iloc[0]["reason"] == "time_stop"
+    assert sells.iloc[0]["price"] == pytest.approx(21.5)
+    assert sells.iloc[0]["date"] == frame.index[35]
+    armed = sim.decisions[sim.decisions["action"] == "time_stop"]
+    assert list(armed["date"]) == [frame.index[34]]
+    control = simulate_portfolio(base, {"AAPL": frame})
+    assert (control.trades["side"] == "sell").sum() == 0
+
+
+def test_simulator_time_stop_does_not_count_a_missing_bar():
+    """A dropped session is not a hold day; the exit waits for the next real bar."""
+    base = run2_config()
+    cfg = replace(base, strategy=replace(base.strategy, max_hold_bars=2))
+    frame = _held_frame()
+    complete = simulate_portfolio(cfg, {"AAPL": frame})
+    gapped = frame.drop(index=frame.index[33])
+    missing = simulate_portfolio(cfg, {"AAPL": gapped})
+    complete_sell = complete.trades[complete.trades["side"] == "sell"].iloc[0]
+    missing_sell = missing.trades[missing.trades["side"] == "sell"].iloc[0]
+    assert complete_sell["date"] == frame.index[34]
+    assert missing_sell["date"] == frame.index[35]
+    assert missing_sell["reason"] == "time_stop"
+
+
+def test_simulator_stop_beats_the_time_stop_on_the_same_bar():
+    """The stop loop runs first, so the Nth session is a stop when the low trades through."""
+    base = run2_config()
+    cfg = replace(base, strategy=replace(base.strategy, max_hold_bars=2))
+    frame = _held_frame()
+    frame.loc[frame.index[33], "Open"] = 20.0
+    frame.loc[frame.index[33], "Low"] = 18.0
+    sim = simulate_portfolio(cfg, {"AAPL": frame})
+    sell = sim.trades[sim.trades["side"] == "sell"].iloc[0]
+    assert sell["reason"] == "stop"
+    assert sell["price"] == pytest.approx(18.4)
+    assert "time_stop" not in set(sim.decisions["action"])
+
+
+def test_simulator_time_stop_does_not_arm_reentry():
+    """A time stop is not a protective stop: the fresh-cross rule still gates the next buy."""
+    base = run2_config()
+    cfg = replace(
+        base,
+        strategy=replace(base.strategy, max_hold_bars=2, stop_reentry_bars=10),
+    )
+    frame = _held_frame(n_after=16)
+    sim = simulate_portfolio(cfg, {"AAPL": frame})
+    buys = sim.trades[sim.trades["side"] == "buy"]
+    sells = sim.trades[sim.trades["side"] == "sell"]
+    assert len(buys) == 1
+    assert len(sells) == 1 and sells.iloc[0]["reason"] == "time_stop"
+
+
 def test_replay_with_a_disabled_stop_holds_instead_of_stopping_at_entry():
     """0 disables the stop in the replay, as in ``stop_breached``/the CLI monitor.
 

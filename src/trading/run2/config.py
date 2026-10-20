@@ -42,6 +42,7 @@ _FROZEN_BASELINES: dict[str, dict[str, float | int | None]] = {
         "entry_min_separation_pct": None,
         "stop_reentry_bars": None,
         "take_profit_pct": None,
+        "max_hold_bars": None,
         "position_notional": 625,
         "max_positions": 8,
         "max_gross_exposure": 5_000,
@@ -76,6 +77,7 @@ _FROZEN_BASELINES: dict[str, dict[str, float | int | None]] = {
         "entry_min_separation_pct": None,
         "stop_reentry_bars": None,
         "take_profit_pct": None,
+        "max_hold_bars": None,
         "position_notional": 625,
         "max_positions": 17,
         "max_gross_exposure": 10_625,
@@ -131,6 +133,13 @@ class StrategyConfig:
     # resting target can only be measured through portfolio-backtest until a
     # human opens a run that carries it.
     take_profit_pct: float | None = None
+    # Experiment-only time stop: after N of the symbol's own sessions, exit at
+    # the next open (the same fill path as a reverse cross). None = the frozen
+    # rule (hold until the cross or the protective stop). Pinned to None on
+    # every live run — a hold cap can only be measured through portfolio-backtest
+    # until a human opens a run that carries it. It does not arm the re-entry
+    # window: the fresh-cross rule still gates the next entry.
+    max_hold_bars: int | None = None
 
 
 @dataclass(frozen=True)
@@ -321,10 +330,14 @@ def _validate(cfg: RunConfig, *, strict: bool = True) -> None:
         "entry_min_separation_pct",
         "stop_reentry_bars",
         "take_profit_pct",
+        "max_hold_bars",
     ):
         value = getattr(cfg.strategy, name)
         if value is not None and value <= 0:
             raise RunConfigError(f"{name} must be positive when set")
+    hold_bars = cfg.strategy.max_hold_bars
+    if hold_bars is not None and (isinstance(hold_bars, bool) or not isinstance(hold_bars, int)):
+        raise RunConfigError("max_hold_bars must be a positive integer")
     vol_target = cfg.portfolio.position_vol_target_pct
     if vol_target is not None and vol_target <= 0:
         raise RunConfigError("position_vol_target_pct must be positive when set")
@@ -395,6 +408,10 @@ def _validate(cfg: RunConfig, *, strict: bool = True) -> None:
         "take_profit_pct": (
             cfg.strategy.take_profit_pct,
             baseline["take_profit_pct"],
+        ),
+        "max_hold_bars": (
+            cfg.strategy.max_hold_bars,
+            baseline["max_hold_bars"],
         ),
         "position_notional": (cfg.portfolio.position_notional, baseline["position_notional"]),
         "max_positions": (cfg.portfolio.max_positions, baseline["max_positions"]),
