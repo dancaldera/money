@@ -20,6 +20,26 @@ How the paper desk actually runs on this machine. Paper only: Alpaca `paper=True
 - Evidence from the previous desk (`veto` fork): `results/legacy-veto/` (its ledger,
   logs and heartbeats) and `~/Legacy/money-veto-2026-09-09/` (full archive).
 
+## Dependencies — what looks unused but is load-bearing
+
+An import-only audit flags three declared packages as "never imported". Do **not**
+remove them; each is required at call time, not via `import` in our source:
+
+- **`pyarrow`** — pandas' parquet engine. `dashboard.py` calls `pd.read_parquet()`
+  on the data cache; pandas imports pyarrow internally, so nothing in `src/`
+  mentions it. Without it every dashboard/coverage read of the cache fails.
+- **`pytest-cov`** — a pytest *plugin*, activated by the `--cov=src/trading` flag,
+  never imported. Removing it silently drops the coverage gate.
+- **`torch`** (research extra) — transformers' model backend. `context.py` imports
+  transformers only; transformers loads FinBERT through torch. Without torch the
+  news arm fails at model load and `collect-context` degrades to a CONTEXT WARNING.
+
+Everything else in `pyproject.toml` has a direct import. The research extra
+(`torch` + `transformers` ≈ 800 MB of the ~1.2 GB venv) exists solely for the
+FinBERT news arm (`shadow_regime_news`); the trading baseline never reads news, so
+dropping that arm is the only way to reclaim the space — it is a strategy decision,
+not a cleanup.
+
 ## Scheduling = Hermes cron (not launchd)
 
 The macOS launchd agents were removed on purpose: one scheduler with visible state.
@@ -317,6 +337,16 @@ the cause, then re-arm explicitly; the stated reason is kept on the run row as
 First real case (2026-09-21): the crypto taker fee is deducted in kind, so a
 crypto buy filled 25bps fewer units than the activity reported and the qty check
 latched the run — see [docs/run2.md](run2.md).
+
+Same-second fill race (NVDA buy 2026-09-28, AMD+NVDA sells 2026-10-21): Alpaca
+posts the FILL activity and moves the position qty about a second apart, so the
+executor's own reconcile used to latch `qty=['NVDA']` on a book that was about
+to match. `reconcile` now re-reads once (`RECONCILE_LAG_RETRY_S`, 2s) before
+latching a qty-only mismatch; a mismatch that survives, or any unknown order,
+still latches and still needs this re-arm. The stock and stop wrappers replay
+the new log chunk to stdout so the silent cron jobs can page on `halted: True`
+— those jobs only read script stdout, and a group redirected only at the log
+made that grep dead.
 
 ## Repo & push policy
 

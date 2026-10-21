@@ -14,6 +14,8 @@ dependencies = [
     "backtesting",
     "pandas",
     "numpy",
+    # pandas' parquet engine — dashboard.py reads the data cache via
+    # pd.read_parquet(); nothing in src/ imports it directly. Do not remove.
     "pyarrow",
     "pyyaml",
     "alpaca-py",
@@ -22,7 +24,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# pytest-cov is a pytest plugin (--cov=src/trading), never imported.
 dev = ["pytest", "pytest-cov"]
+# torch has no direct import in our code: transformers loads FinBERT through it.
+# Removing it breaks the news arm at model load.
 research = ["transformers>=4.40", "torch>=2.2"]
 
 [project.scripts]
