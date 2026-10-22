@@ -20,6 +20,10 @@ MONEY="${MONEY_BIN:-$REPO_DIR/.venv/bin/money}"
 LOG="${STOP_LOG:-$REPO_DIR/results/stop_monitor.log}"
 HEARTBEAT_FILE="${STOP_HEARTBEAT:-$REPO_DIR/results/.last_success_stopmonitor}"
 rotate_log "$LOG"
+log_before=0
+if [ -f "$LOG" ]; then
+  log_before=$(wc -c < "$LOG" | tr -d '[:space:]')
+fi
 
 # Bounded retry for TRANSIENT transport failures only. A DNS blip or a reset
 # connection fails one 30-min tick and leaves every open position unenforced
@@ -110,4 +114,5 @@ rc=0
     fi
   fi
 } >> "$LOG" 2>&1
+replay_since "$LOG" "$log_before"
 exit "$rc"

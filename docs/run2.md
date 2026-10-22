@@ -178,7 +178,11 @@ reconciliation keep running. Two reasons write it:
 - `drawdown_halt:<dd>%` — the account equity fell `portfolio.drawdown_halt_pct`
   below its high-water mark (`service.record_account_snapshot`).
 - `reconciliation_failed:...` — fail-closed on an unknown order or a quantity
-  mismatch. This one is **never** recoverable, by design.
+  mismatch. This one is **never** recoverable, by design. A qty-only mismatch
+  gets one delayed re-read first (`RECONCILE_LAG_RETRY_S`): Alpaca's FILL
+  activity and the position qty do not land in the same second, and latching
+  that race blinds the next scan. A mismatch that is still there, or any
+  unknown order, still latches.
 
 The frozen run (`run2`) keeps the documented **one-way latch**: once halted, only
 a human re-initialises/resettles the run. A manifest may instead opt into a

@@ -8,7 +8,13 @@ from dataclasses import replace
 import pytest
 
 from trading.run2.ledger import RunLedger, utc_now
-from trading.run2.service import Run2Service, RunSafetyError, _bar_end, _feature_payload
+from trading.run2.service import (
+    RECONCILE_LAG_RETRY_S,
+    Run2Service,
+    RunSafetyError,
+    _bar_end,
+    _feature_payload,
+)
 
 from .run2_helpers import add_fill, fresh_buy_frame, initialized_ledger, ohlcv, run2_config
 from .test_run2_risk_service import FakeBroker, _feature
@@ -348,6 +354,119 @@ def test_reconcile_halts_on_unknown_orders_and_mismatches(tmp_path):
         assert result["unknown_orders"] != []
         assert result["quantity_mismatches"] == ["AAPL"]
         assert result["halted"] is True
+        assert ledger.is_halted(cfg.run_id)
+    finally:
+        ledger.close()
+
+
+def _known_buy_order(ledger, cfg, broker_order_id="ord-1"):
+    decision_id = _decision(ledger, cfg, status="submitted", decision_id="d-buy")
+    ledger.record_order(
+        {
+            "run_id": cfg.run_id,
+            "decision_id": decision_id,
+            "portfolio": "baseline",
+            "client_order_id": "c-buy",
+            "broker_order_id": broker_order_id,
+            "symbol": "AAPL",
+            "asset": "stock",
+            "side": "buy",
+            "status": "accepted",
+        }
+    )
+
+
+def _fill_activity(order_id="ord-1", fill_id="fill-1", qty="1"):
+    return {
+        "id": fill_id,
+        "order_id": order_id,
+        "symbol": "AAPL",
+        "side": "buy",
+        "qty": qty,
+        "price": "100",
+        "transaction_time": "2026-08-24T14:00:00Z",
+    }
+
+
+def test_reconcile_waits_out_a_position_that_lags_the_fill(tmp_path, monkeypatch):
+    """The position API still showed the old qty after the FILL activity was
+    booked (AMD+NVDA sells, 2026-10-21). Latch only if the second read still
+    disagrees — a same-second race must not blind the next scan."""
+    slept = []
+    monkeypatch.setattr("trading.run2.service.time.sleep", lambda seconds: slept.append(seconds))
+    cfg, ledger = initialized_ledger(tmp_path)
+    broker = FakeBroker(equity=cfg.starting_equity)
+    try:
+        _known_buy_order(ledger, cfg)
+        calls = {"pos": 0}
+
+        def positions():
+            calls["pos"] += 1
+            if calls["pos"] == 1:
+                return []
+            return [{"symbol": "AAPL", "qty": "1"}]
+
+        broker.positions = positions
+        broker.activities = lambda kind, after=None: (
+            [_fill_activity()] if kind == "FILL" else []
+        )
+        result = Run2Service(cfg, ledger, broker).reconcile()
+        assert result["quantity_mismatches"] == []
+        assert result["halted"] is False
+        assert result["new_fills"] == 1
+        assert result["unknown_orders"] == []
+        assert slept == [RECONCILE_LAG_RETRY_S]
+        assert not ledger.is_halted(cfg.run_id)
+    finally:
+        ledger.close()
+
+
+def test_reconcile_waits_out_a_fill_that_lags_the_position(tmp_path, monkeypatch):
+    """The other order of the race (NVDA buy, 2026-09-28): the position is
+    already there and the FILL activity is not. The second pass books it."""
+    slept = []
+    monkeypatch.setattr("trading.run2.service.time.sleep", lambda seconds: slept.append(seconds))
+    cfg, ledger = initialized_ledger(tmp_path)
+    broker = FakeBroker(equity=cfg.starting_equity)
+    try:
+        _known_buy_order(ledger, cfg)
+        calls = {"fill": 0}
+
+        def activities(kind, after=None):
+            if kind != "FILL":
+                return []
+            calls["fill"] += 1
+            if calls["fill"] == 1:
+                return []
+            return [_fill_activity()]
+
+        broker.activities = activities
+        broker.positions = lambda: [{"symbol": "AAPL", "qty": "1"}]
+        result = Run2Service(cfg, ledger, broker).reconcile()
+        assert result["new_fills"] == 1
+        assert result["quantity_mismatches"] == []
+        assert result["halted"] is False
+        assert slept == [RECONCILE_LAG_RETRY_S]
+        assert not ledger.is_halted(cfg.run_id)
+    finally:
+        ledger.close()
+
+
+def test_reconcile_still_halts_when_the_qty_lag_is_real(tmp_path, monkeypatch):
+    """A mismatch that is still there after the delayed read is a real defect."""
+    slept = []
+    monkeypatch.setattr("trading.run2.service.time.sleep", lambda seconds: slept.append(seconds))
+    cfg, ledger = initialized_ledger(tmp_path)
+    broker = FakeBroker(equity=cfg.starting_equity)
+    try:
+        add_fill(ledger, cfg, "AAPL", "stock", "buy", 1, 100, "01")
+        broker.activities = lambda kind, after=None: []
+        broker.positions = lambda: [{"symbol": "AAPL", "qty": "999"}]
+        result = Run2Service(cfg, ledger, broker).reconcile()
+        assert result["quantity_mismatches"] == ["AAPL"]
+        assert result["unknown_orders"] == []
+        assert result["halted"] is True
+        assert slept == [RECONCILE_LAG_RETRY_S]
         assert ledger.is_halted(cfg.run_id)
     finally:
         ledger.close()

@@ -38,6 +38,10 @@ STOCK_RETRY_SLEEP="${STOCK_RETRY_SLEEP:-45}"
 SUBMITTED_RE="${SUBMITTED_RE:-('action': 'submitted'|action=submitted)}"
 
 rotate_log "$LOG"
+log_before=0
+if [ -f "$LOG" ]; then
+  log_before=$(wc -c < "$LOG" | tr -d '[:space:]')
+fi
 EXTRA=""
 [ "${DRY_RUN:-0}" = "1" ] && EXTRA="--dry-run"
 
@@ -58,10 +62,16 @@ rc=0
   elif [ "${DRY_RUN:-0}" != "1" ]; then
     # Booking only — a fill that reconcile misses here is picked up by the next
     # reconcile (the stop tick and the daily run both run one), so it stays
-    # best-effort, but a transient failure is still retried in place.
+    # best-effort, but a transient failure is still retried in place. The
+    # output has to land in the log: a same-second qty mismatch latches the
+    # run, and a swallowed reconcile is how that latch used to be invisible.
     run_step "$STOCK_MAX_ATTEMPTS" "$STOCK_RETRY_SLEEP" "" \
-      "$MONEY" reconcile --run-id "$RUN_ID" --run-config "$RUN_CONFIG" || true
+      "$MONEY" reconcile --run-id "$RUN_ID" --run-config "$RUN_CONFIG"
+    echo "Run ${RUN_ID} reconciliation"
+    echo "$STEP_OUT"
+    [ "$STEP_ATTEMPTS" -gt 1 ] && echo "Reconcile attempts used: $STEP_ATTEMPTS"
     heartbeat "$HEARTBEAT_FILE"
   fi
 } >> "$LOG" 2>&1
+replay_since "$LOG" "$log_before"
 exit "$rc"

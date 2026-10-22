@@ -425,6 +425,10 @@ if [ "$n" -lt "${STUB_FAILS:-0}" ]; then
   printf '%s\\n' "${STUB_ERR:-NameResolutionError: Max retries exceeded}"
   exit 1
 fi
+if [ "${STUB_HALTED:-0}" = "1" ]; then
+  echo "  reconciliation: fills=0 fees=0 halted=True"
+  exit 0
+fi
 printf '%s\\n' "  AAPL       P&L=+1.00% action=none" \
               "  reconciliation: fills=0 fees=0 halted=False"
 exit 0
@@ -535,6 +539,17 @@ def test_failed_stop_monitor_reaches_the_silent_cron_wrapper(tmp_path):
     assert quiet.stdout.strip() == ""
 
 
+def test_a_latched_halt_reaches_the_silent_stop_wrapper(tmp_path):
+    """paper-stops exits 0 when it only *reports* a halt. The group is redirected
+    to the log, so without replaying that chunk the silent job's halted grep is
+    dead and a latched run pages nobody (measured 2026-10-21)."""
+    env, _, _ = _stop_env(tmp_path, STUB_HALTED="1")
+    done = _run_stop(SILENT_STOP, env)
+    assert done.returncode == 0
+    assert "HALTED" in done.stdout
+    assert "halted=True" in done.stdout
+
+
 def test_stop_wrapper_defaults_still_point_at_the_repo_cli():
     """The seams are opt-in: the live path must keep using the venv CLI, or the
     scheduled job would run a stub (or fail to find `money`)."""
@@ -581,6 +596,11 @@ LIB = ROOT / "scripts" / "_lib.sh"
 # retry regex reads), then every call succeeds.
 _DAY_STUB = """#!/bin/bash
 echo "$@" >> "$STUB_CALLS"
+if [ "${STUB_RECON_HALT:-0}" = "1" ]; then
+  case "$*" in
+    *reconcile*) echo "  halted: True"; exit 0 ;;
+  esac
+fi
 key="${STUB_FAIL_KEY:-paper-scan}"
 case "$*" in
   *"$key"*) ;;
@@ -737,6 +757,23 @@ def test_failed_stock_execution_reaches_the_silent_cron_wrapper(tmp_path):
         ["bash", str(SILENT_STOCK)], capture_output=True, text=True, env=ok_env, cwd=str(ROOT)
     )
     assert quiet_run.stdout.strip() == ""
+
+
+def test_a_reconcile_halt_reaches_the_silent_stock_wrapper(tmp_path):
+    """execute-intents can succeed and reconcile can still latch the run, exiting
+    0. The reconcile block has to be in the log, and that chunk has to reach the
+    silent job, or the halt that blinds tonight's scan is invisible."""
+    env, calls = _day_env(tmp_path, STUB_RECON_HALT="1")
+    done = subprocess.run(
+        ["bash", str(SILENT_STOCK)], capture_output=True, text=True, env=env, cwd=str(ROOT)
+    )
+    assert done.returncode == 0
+    assert "HALTED" in done.stdout
+    assert "halted: True" in done.stdout
+    log = (tmp_path / "stock.log").read_text()
+    assert "Run run3 reconciliation" in log
+    assert "halted: True" in log
+    assert _calls(calls, "reconcile") == 1
 
 
 def test_money_slots_exit_with_the_cli_rc_through_the_seamed_binary(tmp_path):

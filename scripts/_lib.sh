@@ -72,6 +72,19 @@ run_step() {
   return 0
 }
 
+# replay_since <log> <byte_offset>: copy to stdout the bytes appended to <log>
+# after <byte_offset> (from `wc -c`, taken before the redirected group). The
+# scheduled wrappers write only to the log, and the silent cron jobs only read
+# script stdout — without this replay a halt, a stop, or a submitted intent
+# never reaches the job that pages the operator. Measured 2026-10-21: stock
+# sells latched reconciliation_failed and both the stock slot and the stop tick
+# exited 0 with empty stdout, so nobody was paged.
+replay_since() {
+  local log="$1" before="${2:-0}"
+  [ -f "$log" ] || return 0
+  tail -c +$((before + 1)) "$log"
+}
+
 # record_scan_success <dry_run 0|1> <success_heartbeat> <preview_heartbeat>:
 # record a finished daily scan. A DRY_RUN preview must NEVER advance the success
 # heartbeat: the 22:00 catch-up guard runs the desk only when today's success

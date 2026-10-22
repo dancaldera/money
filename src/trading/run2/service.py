@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from decimal import ROUND_DOWN, Decimal
 import hashlib
 import json
+import time
 from typing import Any, Mapping
 
 import pandas as pd
@@ -20,6 +21,15 @@ from .sizing import entry_notional
 
 class RunSafetyError(RuntimeError):
     """Raised when an operation would violate the frozen paper-run contract."""
+
+
+# Alpaca posts a FILL activity and moves the position qty up to about a second
+# apart (this desk: NVDA buy 2026-09-28, activity 1s after the submit; AMD+NVDA
+# sells 2026-10-21, activities booked while the position API still showed the
+# old qty). A same-second reconcile then latches reconciliation_failed, and no
+# schedule clears that latch, so the next scan is blind. One delayed re-read
+# before latching. A mismatch that survives it is real and still latches.
+RECONCILE_LAG_RETRY_S = 2
 
 
 def _bar_end(df: pd.DataFrame) -> str:
@@ -545,15 +555,12 @@ class Run2Service:
             }
         )
 
-    def reconcile(self) -> dict[str, Any]:
-        self.ledger.assert_manifest(self.cfg)
-        if self.broker is None:
-            raise RunSafetyError("A paper broker is required to reconcile")
-        run = self.ledger.run(self.cfg.run_id)
-        after = run["started_at"] if run else None
-        unknown_orders: list[str] = []
+    def _import_fill_activities(self, after: str | None) -> tuple[int, int, list[str]]:
+        """Book FILL activities. Idempotent (fill_id), so a lag retry can re-call it."""
+        assert self.broker is not None
         new_fills = 0
         new_fees = 0
+        unknown_orders: list[str] = []
         for activity in self.broker.activities("FILL", after):
             broker_order_id = str(activity.get("order_id", ""))
             order = self.ledger.order_by_broker_id(self.cfg.run_id, broker_order_id)
@@ -610,6 +617,37 @@ class Run2Service:
                     }
                 )
             )
+        return new_fills, new_fees, unknown_orders
+
+    def _position_mismatches(self) -> list[str]:
+        assert self.broker is not None
+        broker_positions = {
+            p["symbol"].replace("/", ""): Decimal(str(p["qty"]))
+            for p in self.broker.positions()
+        }
+        ledger_positions = {
+            s.replace("/", ""): p.qty
+            for s, p in self.ledger.positions(self.cfg.run_id).items()
+        }
+        return [
+            symbol
+            for symbol in sorted(set(broker_positions) | set(ledger_positions))
+            if abs(
+                broker_positions.get(symbol, Decimal(0))
+                - ledger_positions.get(symbol, Decimal(0))
+            )
+            > Decimal("0.00000001")
+        ]
+
+    def reconcile(self) -> dict[str, Any]:
+        self.ledger.assert_manifest(self.cfg)
+        if self.broker is None:
+            raise RunSafetyError("A paper broker is required to reconcile")
+        run = self.ledger.run(self.cfg.run_id)
+        after = run["started_at"] if run else None
+        unknown_orders: list[str] = []
+        new_fills, new_fees, fill_unknown = self._import_fill_activities(after)
+        unknown_orders.extend(fill_unknown)
 
         # IOC orders can finish without a fill. Mirror terminal broker state so
         # a canceled order does not remain a permanent submitted-risk hold.
@@ -650,14 +688,18 @@ class Run2Service:
                 )
 
         account = self.broker.account()
-        broker_positions = {p["symbol"].replace("/", ""): Decimal(str(p["qty"])) for p in self.broker.positions()}
-        ledger_positions = {
-            s.replace("/", ""): p.qty for s, p in self.ledger.positions(self.cfg.run_id).items()
-        }
-        mismatches = []
-        for symbol in sorted(set(broker_positions) | set(ledger_positions)):
-            if abs(broker_positions.get(symbol, Decimal(0)) - ledger_positions.get(symbol, Decimal(0))) > Decimal("0.00000001"):
-                mismatches.append(symbol)
+        mismatches = self._position_mismatches()
+        # Qty-only lag, not an unknown order: re-read once before latching.
+        # Unknown orders stay fail-closed on the first pass — a ghost order is
+        # not a timing race.
+        if mismatches and not unknown_orders:
+            time.sleep(RECONCILE_LAG_RETRY_S)
+            retry_fills, retry_fees, retry_unknown = self._import_fill_activities(after)
+            new_fills += retry_fills
+            new_fees += retry_fees
+            unknown_orders.extend(retry_unknown)
+            mismatches = self._position_mismatches()
+            account = self.broker.account()
         self.record_account_snapshot(account)
         if unknown_orders or mismatches:
             reason = f"reconciliation_failed:unknown_orders={unknown_orders},qty={mismatches}"
