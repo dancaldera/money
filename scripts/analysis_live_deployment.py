@@ -20,6 +20,13 @@ step and the one a daily read never shows:
    Arithmetic on *realised* live P&L, never a forecast: the measured ladder in
    ``docs/experiments.md`` is what prices a real step up, and changing the size
    of the live book is a human decision (new run_id + reviewed registry entry).
+5. **Round trips and replay parity** — the closed trades by leg and by symbol
+   (gross, fees, net), then the live expectancy against the per-trade
+   distribution of a replayed control: the z of the gap, the exact binomial tail
+   of the win count, and how many trades the observed gap would need to reach
+   2 sigma. This is the instrument that keeps a five-week record from being read
+   as a broken strategy — every lever on this desk was measured closed, so the
+   honest response to a short shortfall is patience, and this line says how much.
 
 Read-only, and no broker or network call: marks come from the newest recorded
 decision per symbol, i.e. the last closed bar's close the desk itself acted on.
@@ -33,14 +40,21 @@ Run:  .venv/bin/python scripts/analysis_live_deployment.py \
 from __future__ import annotations
 
 import argparse
+import csv
 import json
+import math
 from collections import Counter
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 DEFAULT_LEDGER = Path("results/run3/ledger.sqlite")
 DEFAULT_RUN_CONFIG = Path("config/run3.yaml")
+# The 1x control replay: the reference distribution of what one of this desk's
+# trades pays. Any replayed run works; this one is the frozen-basis control.
+DEFAULT_REPLAY_TRADES = Path("results/exp-slots-all-recover/portfolio-backtest/trades.csv")
 SCALE_FACTORS = (1.0, 2.0, 3.0)
+# 90% one-sided: below this the live gap is inside the replay's own noise.
+Z_ALERT = 1.645
 
 
 def latest_marks(decisions: Iterable[Mapping[str, Any]]) -> dict[str, float]:
@@ -214,6 +228,145 @@ def _fmt(value: float, digits: int = 2) -> str:
     return f"{value:,.{digits}f}"
 
 
+def distribution(pnls: Sequence[float]) -> dict[str, float]:
+    """Mean, sample stdev and win rate of a per-trade P&L series.
+
+    Sample (n-1) stdev on purpose: this is used as the *reference* dispersion a
+    short live record is judged against, never to describe the whole population.
+    """
+    values = [float(value) for value in pnls]
+    n = len(values)
+    if not n:
+        return {"n": 0, "mean": 0.0, "stdev": 0.0, "win_rate_pct": 0.0}
+    mean = sum(values) / n
+    variance = sum((value - mean) ** 2 for value in values) / (n - 1) if n > 1 else 0.0
+    return {
+        "n": n,
+        "mean": mean,
+        "stdev": math.sqrt(variance),
+        "win_rate_pct": 100 * sum(1 for value in values if value > 0) / n,
+    }
+
+
+def realized_census(trades: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+    """Where the closed trades' money went, by leg and by symbol.
+
+    ``trades`` are the rows of ``trading.run2.reporting.closed_trades`` for ONE
+    portfolio. That filter is load-bearing: shadow portfolios write to the same
+    ``fills`` table under their own ``portfolio`` value, so summing the table
+    unfiltered doubles the trade count and manufactures round trips that never
+    happened (DOGE/USD read as a -6,077 unit position before the filter).
+    """
+    legs: dict[str, dict[str, float]] = {}
+    symbols: dict[str, dict[str, float]] = {}
+    for row in trades:
+        net = float(row["pnl"])
+        for bucket, key in ((legs, str(row["asset"])), (symbols, str(row["symbol"]))):
+            item = bucket.setdefault(
+                key, {"trips": 0, "wins": 0, "gross": 0.0, "fees": 0.0, "net": 0.0}
+            )
+            item["trips"] += 1
+            item["wins"] += 1 if net > 0 else 0
+            item["gross"] += float(row["gross"])
+            item["fees"] += float(row["fees"])
+            item["net"] += net
+    return {
+        "trips": sum(item["trips"] for item in symbols.values()),
+        "gross": sum(item["gross"] for item in symbols.values()),
+        "fees": sum(item["fees"] for item in symbols.values()),
+        "net": sum(item["net"] for item in symbols.values()),
+        "legs": dict(sorted(legs.items())),
+        "symbols": dict(sorted(symbols.items(), key=lambda kv: (-kv[1]["net"], kv[0]))),
+    }
+
+
+def replay_reference(path: str | Path) -> dict[str, Any] | None:
+    """Per-trade P&L distribution of a ``portfolio-backtest`` artifact.
+
+    Reads the ``trades.csv`` a replay writes (one row per fill, ``realized_pl``
+    is the fee-net P&L booked on the closing side) and keeps the closing rows:
+    the opens carry a 0 that would otherwise drag the reference mean toward
+    zero. Returns None when the artifact is absent or too short to have a
+    dispersion, so the report can say "no reference" instead of inventing one.
+    """
+    artifact = Path(path)
+    if not artifact.exists():
+        return None
+    pnls: list[float] = []
+    with artifact.open(newline="") as handle:
+        for row in csv.DictReader(handle):
+            if str(row.get("side") or "") != "sell":
+                continue
+            try:
+                pnls.append(float(row["realized_pl"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+    if len(pnls) < 2:
+        return None
+    return {"path": str(artifact), "run": artifact.parent.parent.name, **distribution(pnls)}
+
+
+def parity(
+    live_pnls: Sequence[float], reference: Mapping[str, Any] | None, equity: float
+) -> dict[str, Any]:
+    """Is the live record distinguishable from the replay's, or is it noise?
+
+    The only question a five-week paper run can answer. ``z`` is one-sample
+    against the *replay's* per-trade stdev (a live sample of a few trades cannot
+    estimate its own), ``n_for_2sigma`` the trade count this observed gap would
+    need to reach 2 sigma — i.e. how much patience the desk's own edge needs
+    before a shortfall can be read as a defect — and ``win_p_value`` the exact
+    binomial tail ``P(wins <= observed | replay win rate)``. None of it is a
+    forecast, and it never justifies a parameter change on its own: every lever
+    this desk has was measured closed, so the honest use of a short record is to
+    rule out "broken" and wait.
+    """
+    live = distribution(live_pnls)
+    out: dict[str, Any] = {
+        "live": live,
+        "reference": dict(reference) if reference else None,
+        "gap_per_trade": None,
+        "z": None,
+        "n_for_2sigma": None,
+        "win_p_value": None,
+        "shortfall_dollars": None,
+        "inside_noise": None,
+    }
+    if reference is None or not live["n"]:
+        return out
+    gap = live["mean"] - float(reference["mean"])
+    wins = sum(1 for value in live_pnls if float(value) > 0)
+    rate = float(reference["win_rate_pct"]) / 100
+    out.update(
+        {
+            "gap_per_trade": gap,
+            "shortfall_dollars": gap * live["n"],
+            "shortfall_pct_of_equity": (100 * gap * live["n"] / equity) if equity else 0.0,
+            "win_p_value": sum(
+                math.comb(int(live["n"]), k) * rate**k * (1 - rate) ** (int(live["n"]) - k)
+                for k in range(wins + 1)
+            ),
+        }
+    )
+    sigma = float(reference["stdev"]) / math.sqrt(live["n"])
+    if not sigma:
+        # A reference with no dispersion cannot express a sigma: leave z None
+        # rather than call a gap of any size "0 sigma, inside the noise".
+        return out
+    out.update(
+        {
+            "z": gap / sigma,
+            "n_for_2sigma": (
+                math.ceil((2 * float(reference["stdev"]) / -gap) ** 2)
+                if gap < 0 and float(reference["stdev"]) > 0
+                else None
+            ),
+            "inside_noise": abs(gap) < Z_ALERT * sigma,
+        }
+    )
+    return out
+
+
 def render(report: Mapping[str, Any]) -> str:
     dep, census = report["deployment"], report["census"]
     out = [
@@ -277,7 +430,10 @@ def render(report: Mapping[str, Any]) -> str:
         + (f" | expired reasons: {census['expired_reasons']}" if census["expired_reasons"] else "")
         + f" | sessions recorded {report['sessions']}"
     )
-    out += ["", "sizing arithmetic (live move x notional factor; arithmetic, not a forecast):"]
+    out += [
+        "",
+        "sizing arithmetic (live move x notional factor; arithmetic, not a forecast):",
+    ]
     for item in report["scaling"]:
         out.append(
             f"  {item['factor']:.1f}x  ${item['dollars']:+,.2f}  "
@@ -287,11 +443,87 @@ def render(report: Mapping[str, Any]) -> str:
         "  What prices a real step up is the measured ladder (docs/experiments.md); "
         "the size of the live book is a human decision."
     )
+    out += round_trip_lines(report.get("round_trips"))
+    out += parity_lines(report.get("parity"))
     return "\n".join(out)
 
 
-def build_report(ledger: Any, cfg: Any, portfolio: str) -> dict[str, Any]:
-    from trading.run2.reporting import collect_run_report
+def round_trip_lines(census: Mapping[str, Any] | None) -> list[str]:
+    """Closed-trade attribution: which leg and which symbol paid, net of fees."""
+    if not census or not census.get("trips"):
+        return []
+    legs = " | ".join(
+        f"{leg} {int(item['trips'])} trips {int(item['wins'])} win net ${item['net']:+,.2f}"
+        for leg, item in census["legs"].items()
+    )
+    by_symbol = "  ".join(
+        f"{symbol} ${item['net']:+,.2f} ({int(item['wins'])}/{int(item['trips'])})"
+        for symbol, item in census["symbols"].items()
+    )
+    return [
+        "",
+        f"closed round trips [{census.get('portfolio', 'baseline')}]: "
+        f"{int(census['trips'])} trips, gross ${census['gross']:+,.2f}, "
+        f"fees ${census['fees']:,.2f}"
+        + (
+            f" of ${census['fees_booked']:,.2f} booked"
+            if census.get("fees_booked") is not None
+            else ""
+        )
+        + f", net ${census['net']:+,.2f}",
+        f"  by leg: {legs}",
+        f"  by symbol: {by_symbol}",
+    ]
+
+
+def parity_lines(result: Mapping[str, Any] | None) -> list[str]:
+    """The line a short live record earns: noise, or a defect worth chasing."""
+    if not result:
+        return []
+    reference = result.get("reference")
+    if not reference:
+        return [
+            "",
+            "replay parity: no reference artifact (pass --replay-trades "
+            "<run>/portfolio-backtest/trades.csv) — skipped",
+        ]
+    live = result["live"]
+    head = (
+        f"replay parity vs {reference['run']} ({int(reference['n'])} closed trips, "
+        f"${reference['mean']:,.2f}/trade, sd ${reference['stdev']:,.2f}, "
+        f"win {reference['win_rate_pct']:.1f}%):"
+    )
+    if not live["n"]:
+        return ["", head, "  no live round trip yet — nothing to compare"]
+    if result["z"] is None:
+        return ["", head, "  the reference has no dispersion — comparison skipped"]
+    verdict = (
+        "inside the replay's noise — do not read it as a broken desk"
+        if result["inside_noise"]
+        else "outside the replay envelope — investigate, do not re-tune"
+    )
+    out = [
+        "",
+        head,
+        f"  live {int(live['n'])} trips at ${live['mean']:,.2f}/trade -> gap "
+        f"${result['gap_per_trade']:+,.2f}/trade = {result['z']:+.2f} sigma; "
+        f"P(wins<={int(round(live['win_rate_pct'] * live['n'] / 100))} | replay rate) = "
+        f"{result['win_p_value']:.2f}",
+        f"  shortfall vs the replay's expectation ${result['shortfall_dollars']:+,.2f} "
+        f"({result.get('shortfall_pct_of_equity', 0.0):+.2f}% of equity) — {verdict}",
+    ]
+    if result["n_for_2sigma"]:
+        out.append(
+            f"  at this rate the gap needs {int(result['n_for_2sigma'])} trades to reach "
+            "2 sigma: the sample, not the strategy, is what is short"
+        )
+    return out
+
+
+def build_report(
+    ledger: Any, cfg: Any, portfolio: str, replay_trades: str | Path = DEFAULT_REPLAY_TRADES
+) -> dict[str, Any]:
+    from trading.run2.reporting import closed_trades, collect_run_report
 
     run = ledger.assert_manifest(cfg)
     positions = ledger.positions(cfg.run_id, portfolio)
@@ -302,6 +534,10 @@ def build_report(ledger: Any, cfg: Any, portfolio: str) -> dict[str, Any]:
     snapshot = history[-1] if history else None
     equity = float(snapshot["equity"]) if snapshot else float(run["starting_equity"])
     stats = collect_run_report(cfg, ledger, marks)["portfolios"][portfolio]
+    trades = closed_trades(ledger, cfg, portfolio)
+    census = realized_census(trades)
+    census["portfolio"] = portfolio
+    census["fees_booked"] = float(ledger.total_fees(cfg.run_id))
     market_value = sum(row["market_value"] for row in rows)
     unrealized = sum(row["unrealized_pl"] for row in rows)
     cost = sum(row["cost_basis"] for row in rows)
@@ -326,6 +562,8 @@ def build_report(ledger: Any, cfg: Any, portfolio: str) -> dict[str, Any]:
         },
         "deployment": deployment(rows, equity, cfg.portfolio),
         "census": intent_census(decisions),
+        "round_trips": census,
+        "parity": parity([row["pnl"] for row in trades], replay_reference(replay_trades), equity),
         "scaling": scaling_arithmetic(unrealized, equity),
         "realized": {
             key: stats[key]
@@ -350,6 +588,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--ledger", default=str(DEFAULT_LEDGER))
     parser.add_argument("--run-config", default=str(DEFAULT_RUN_CONFIG))
     parser.add_argument("--portfolio", default="baseline")
+    parser.add_argument(
+        "--replay-trades",
+        default=str(DEFAULT_REPLAY_TRADES),
+        help="trades.csv of a replayed control run, the per-trade reference distribution",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
@@ -359,7 +602,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     cfg = load_run_config(args.run_config)
     ledger = RunLedger(args.ledger)
     try:
-        report = build_report(ledger, cfg, args.portfolio)
+        report = build_report(ledger, cfg, args.portfolio, args.replay_trades)
     finally:
         ledger.close()
     if args.json:

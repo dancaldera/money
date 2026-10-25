@@ -148,6 +148,123 @@ def test_scaling_arithmetic_multiplies_dollars_not_percent():
     assert [item["pct_of_equity"] for item in scaled] == pytest.approx([0.25, 0.5])
 
 
+def _trade(symbol, asset, gross, fees):
+    return {"symbol": symbol, "asset": asset, "gross": gross, "fees": fees, "pnl": gross - fees}
+
+
+def test_distribution_is_sample_stdev_and_zero_is_not_a_win():
+    dist = live.distribution([10.0, -5.0, 0.0, 30.0])
+    assert dist["n"] == 4
+    assert dist["mean"] == pytest.approx(8.75)
+    assert dist["stdev"] == pytest.approx(15.478, abs=1e-3)  # n-1, not the population sd
+    assert dist["win_rate_pct"] == pytest.approx(50.0)  # a flat trip is not a win
+    assert live.distribution([]) == {"n": 0, "mean": 0.0, "stdev": 0.0, "win_rate_pct": 0.0}
+    assert live.distribution([7.0])["stdev"] == 0.0
+
+
+def test_realized_census_separates_legs_symbols_and_costs():
+    census = live.realized_census(
+        [
+            _trade("AMD", "stock", 82.0, 0.75),
+            _trade("AAVE/USD", "crypto", 54.0, 2.3),
+            _trade("DOGE/USD", "crypto", -47.0, 2.5),
+        ]
+    )
+    assert census["trips"] == 3
+    assert census["gross"] == pytest.approx(89.0)
+    assert census["fees"] == pytest.approx(5.55)
+    assert census["net"] == pytest.approx(83.45)
+    assert census["legs"]["crypto"] == pytest.approx(
+        {"trips": 2, "wins": 1, "gross": 7.0, "fees": 4.8, "net": 2.2}, abs=1e-9
+    )
+    # Worst net first: the losing trip is what the reader needs to see.
+    assert list(census["symbols"]) == ["AMD", "AAVE/USD", "DOGE/USD"]
+    assert live.realized_census([])["trips"] == 0
+
+
+def test_replay_reference_reads_only_closing_rows(tmp_path):
+    artifact = tmp_path / "exp-x" / "portfolio-backtest"
+    artifact.mkdir(parents=True)
+    path = artifact / "trades.csv"
+    path.write_text(
+        "date,symbol,asset,side,qty,price,fee,realized_pl,reason\n"
+        "2026-01-02,BTC/USD,crypto,buy,0.01,40000,1.0,0.0,\n"
+        "2026-01-03,BTC/USD,crypto,sell,0.01,44000,1.0,39.0,reverse_cross\n"
+        "2026-01-04,AAPL,stock,buy,1,100,0.0,0.0,\n"
+        "2026-01-05,AAPL,stock,sell,1,90,0.0,-10.0,stop:-10%\n"
+        "2026-01-06,AMD,stock,sell,1,90,0.0,not-a-number,\n"
+    )
+    ref = live.replay_reference(path)
+    # The two opens carry 0 and must not drag the reference mean; the malformed
+    # realized_pl row is skipped instead of becoming a zero.
+    assert ref["n"] == 2
+    assert ref["mean"] == pytest.approx(14.5)
+    assert ref["stdev"] == pytest.approx(34.648, abs=1e-3)
+    assert ref["win_rate_pct"] == pytest.approx(50.0)
+    assert ref["run"] == "exp-x"
+    assert live.replay_reference(tmp_path / "missing.csv") is None
+    path.write_text("date,symbol,asset,side,qty,price,fee,realized_pl,reason\n")
+    assert live.replay_reference(path) is None  # too short to have a dispersion
+
+
+def test_parity_sizes_the_gap_against_the_replay_not_the_live_sample():
+    reference = {"run": "ctl", "n": 366, "mean": 25.75, "stdev": 251.41, "win_rate_pct": 30.1}
+    live_pnls = [-7.64] * 7
+    result = live.parity(live_pnls, reference, equity=100_000.0)
+    assert result["gap_per_trade"] == pytest.approx(-33.39)
+    # 33.39 / (251.41 / sqrt(7)) = 0.35 sigma: a seven-trade record is noise.
+    assert result["z"] == pytest.approx(-0.351, abs=1e-3)
+    assert result["inside_noise"] is True
+    assert result["shortfall_dollars"] == pytest.approx(-233.73)
+    assert result["shortfall_pct_of_equity"] == pytest.approx(-0.2337, abs=1e-3)
+    # 2 x 251.41 / 33.39 squared: how long the same gap needs to be readable.
+    assert result["n_for_2sigma"] == 227
+    assert 0 < result["win_p_value"] < 1
+    # A gap of zero (live == replay) needs no patience and is not a shortfall.
+    level = live.parity([25.75] * 7, reference, equity=100_000.0)
+    assert level["gap_per_trade"] == pytest.approx(0.0)
+    assert level["n_for_2sigma"] is None
+    assert level["inside_noise"] is True
+    # Outside 1.645 sigma with a real, large gap: that is the "investigate" case.
+    bad = live.parity([-100.0] * 36, reference, equity=100_000.0)
+    assert bad["inside_noise"] is False
+    # Degenerate reference (no dispersion) must not divide by zero.
+    flat = live.parity([-1.0], {**reference, "stdev": 0.0}, equity=100_000.0)
+    assert flat["z"] is None and flat["inside_noise"] is None
+    # No reference / no trades: the comparison is skipped, never invented.
+    assert live.parity([-7.64] * 7, None, 1.0)["z"] is None
+    assert live.parity([], reference, 1.0)["z"] is None
+
+
+def test_parity_lines_state_which_case_the_record_is_in():
+    reference = {"run": "ctl", "n": 366, "mean": 25.75, "stdev": 251.41, "win_rate_pct": 30.1}
+    noisy = live.parity_lines(live.parity([-7.64] * 7, reference, 100_000.0))
+    assert "replay parity vs ctl (366 closed trips" in noisy[1]
+    assert "inside the replay's noise" in "\n".join(noisy)
+    assert "227 trades to reach" in "\n".join(noisy)
+    broken = live.parity_lines(live.parity([-100.0] * 36, reference, 100_000.0))
+    # Outside the envelope asks for an investigation, never a re-tune.
+    assert "outside the replay envelope — investigate, do not re-tune" in "\n".join(broken)
+    assert "no reference artifact" in "\n".join(live.parity_lines(live.parity([-1.0], None, 1.0)))
+    assert "no live round trip yet" in "\n".join(
+        live.parity_lines(live.parity([], reference, 1.0))
+    )
+    undersized = live.parity([-1.0], {**reference, "stdev": 0.0}, 1.0)
+    assert "no dispersion" in "\n".join(live.parity_lines(undersized))
+    assert live.parity_lines(None) == []
+
+
+def test_round_trip_lines_skip_an_empty_census():
+    assert live.round_trip_lines(None) == []
+    assert live.round_trip_lines({"trips": 0}) == []
+    census = live.realized_census([_trade("AMD", "stock", 82.0, 0.75)])
+    census["portfolio"], census["fees_booked"] = "baseline", 12.15
+    text = "\n".join(live.round_trip_lines(census))
+    assert "closed round trips [baseline]: 1 trips" in text
+    assert "fees $0.75 of $12.15 booked" in text
+    assert "by symbol: AMD $+81.25 (1/1)" in text
+
+
 def test_render_keeps_the_ledger_drawdown_percent_scale():
     report = {
         "run_id": "run3",

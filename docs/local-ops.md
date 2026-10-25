@@ -225,7 +225,14 @@ of what the guards did with each fresh cross (allowed / blocked by which guard /
 filled / pending / expired). It is read-only and needs no broker or network call —
 if the live book is at 4% of equity, that ratio is what a size step has to move,
 and the scan census is the live evidence for whether a cap or the entry rule is
-holding it back.
+holding it back. It also reads the closed round trips by leg and by symbol, and
+sets the live expectancy against the per-trade distribution of a replayed
+control (`--replay-trades <run>/portfolio-backtest/trades.csv`): the gap in
+sigmas, the exact binomial tail of the win count, and how many trades that gap
+would need to reach 2 sigma. That last number is the point — a five-week record
+of 7 trips at -$7.64/trade is -0.35 sigma inside the control's noise, and the
+same gap would need ~227 trades to become readable, so a short shortfall is a
+reason to wait, not to re-tune a lever that was already measured closed.
 
 The sweep table (`analysis_experiment_table.py`, the fifth command above) answers
 "which of these replays actually won" without hand-copying five `summary.json`

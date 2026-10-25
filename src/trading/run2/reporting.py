@@ -15,12 +15,15 @@ from .ledger import RunLedger
 from .portfolio import block_bootstrap_mean_ci, deflated_sharpe_probability
 
 
-def _closed_trade_pnls(ledger: RunLedger, cfg: RunConfig, portfolio: str) -> list[float]:
-    """Return fee-net P&L for completed symbol round trips.
+def closed_trades(ledger: RunLedger, cfg: RunConfig, portfolio: str) -> list[dict[str, Any]]:
+    """Fee-net P&L of every completed symbol round trip, tagged by symbol and leg.
 
     Multiple partial fills are one completed trade. Baseline fees are linked by
     broker order id when Alpaca supplies it; shadow costs use the pre-registered
-    slippage/taker-fee assumptions.
+    slippage/taker-fee assumptions. ``gross`` is the price move alone and
+    ``fees`` what the cycle paid, so a live-vs-replay comparison can separate
+    the two — on this desk crypto's in-kind taker fee is most of the live bill
+    and it is charged inside the asset, i.e. invisible to a price-only P&L.
     """
     fees_by_order: dict[str, Decimal] = {}
     if portfolio == "baseline":
@@ -30,13 +33,13 @@ def _closed_trade_pnls(ledger: RunLedger, cfg: RunConfig, portfolio: str) -> lis
                 fees_by_order[order_id] = fees_by_order.get(order_id, Decimal(0)) + Decimal(
                     fee["amount"]
                 )
-    state: dict[str, tuple[Decimal, Decimal, Decimal, Decimal]] = {}
-    pnls: list[float] = []
+    state: dict[str, tuple[Decimal, Decimal, Decimal, Decimal, str]] = {}
+    trades: list[dict[str, Any]] = []
     for fill in ledger.fills(cfg.run_id, portfolio):
         symbol = fill["symbol"]
         qty, price = Decimal(fill["qty"]), Decimal(fill["price"])
-        held, cost, cycle_pl, cycle_fees = state.get(
-            symbol, (Decimal(0), Decimal(0), Decimal(0), Decimal(0))
+        held, cost, cycle_pl, cycle_fees, asset = state.get(
+            symbol, (Decimal(0), Decimal(0), Decimal(0), Decimal(0), str(fill["asset"]))
         )
         if portfolio == "baseline":
             cycle_fees += fees_by_order.pop(str(fill["broker_order_id"] or ""), Decimal(0))
@@ -48,18 +51,31 @@ def _closed_trade_pnls(ledger: RunLedger, cfg: RunConfig, portfolio: str) -> lis
             )
             cycle_fees += qty * price * Decimal(str(rate_bps)) / Decimal(10_000)
         if fill["side"] == "buy":
-            state[symbol] = (held + qty, cost + qty * price, cycle_pl, cycle_fees)
+            state[symbol] = (held + qty, cost + qty * price, cycle_pl, cycle_fees, asset)
         elif held > 0:
             sold = min(held, qty)
             avg = cost / held
             cycle_pl += sold * (price - avg)
             remaining = held - sold
             if remaining <= Decimal("0.000000000001"):
-                pnls.append(float(cycle_pl - cycle_fees))
-                state[symbol] = (Decimal(0), Decimal(0), Decimal(0), Decimal(0))
+                trades.append(
+                    {
+                        "symbol": symbol,
+                        "asset": asset,
+                        "gross": float(cycle_pl),
+                        "fees": float(cycle_fees),
+                        "pnl": float(cycle_pl - cycle_fees),
+                    }
+                )
+                state[symbol] = (Decimal(0), Decimal(0), Decimal(0), Decimal(0), asset)
             else:
-                state[symbol] = (remaining, remaining * avg, cycle_pl, cycle_fees)
-    return pnls
+                state[symbol] = (remaining, remaining * avg, cycle_pl, cycle_fees, asset)
+    return trades
+
+
+def _closed_trade_pnls(ledger: RunLedger, cfg: RunConfig, portfolio: str) -> list[float]:
+    """Fee-net P&L per completed round trip (see :func:`closed_trades`)."""
+    return [row["pnl"] for row in closed_trades(ledger, cfg, portfolio)]
 
 
 def collect_run_report(

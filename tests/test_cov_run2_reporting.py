@@ -5,7 +5,12 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from trading.run2.reporting import _closed_trade_pnls, collect_run_report, render_run_report
+from trading.run2.reporting import (
+    _closed_trade_pnls,
+    closed_trades,
+    collect_run_report,
+    render_run_report,
+)
 
 from .run2_helpers import add_fill, initialized_ledger
 
@@ -91,6 +96,33 @@ def test_closed_trade_pnls_net_fees_and_partials(tmp_path):
         _seed_shadow_round_trip(ledger, cfg)
         shadow = _closed_trade_pnls(ledger, cfg, "shadow_regime")
         assert len(shadow) == 2 and shadow[0] > 0 > shadow[1]
+    finally:
+        ledger.close()
+
+
+def test_closed_trades_tag_symbol_leg_and_separate_gross_from_fees(tmp_path):
+    """The parity lens needs to say *which* leg paid and how much was cost.
+
+    ``_closed_trade_pnls`` is the same walk with the tags stripped, so the two
+    must never drift: a difference would silently change run-report expectancy.
+    """
+    cfg, ledger = initialized_ledger(tmp_path)
+    try:
+        _seed_rich_baseline(ledger, cfg)
+        base = closed_trades(ledger, cfg, "baseline")
+        assert [row["symbol"] for row in base] == ["AAPL"]
+        assert base[0]["asset"] == "stock"
+        assert base[0]["gross"] == pytest.approx(30.0)
+        assert base[0]["fees"] == pytest.approx(1.0)  # the $0.5 orphan fee is unlinked
+        assert base[0]["pnl"] == pytest.approx(29.0)
+        assert [row["pnl"] for row in base] == _closed_trade_pnls(ledger, cfg, "baseline")
+        _seed_shadow_round_trip(ledger, cfg)
+        shadow = closed_trades(ledger, cfg, "shadow_regime")
+        # Shadow costs are modelled from the config, not read from fee rows.
+        assert {row["asset"] for row in shadow} == {"crypto", "stock"}
+        assert all(row["fees"] > 0 for row in shadow)
+        # Baseline is untouched by shadow fills written into the same table.
+        assert len(closed_trades(ledger, cfg, "baseline")) == 1
     finally:
         ledger.close()
 
