@@ -74,10 +74,60 @@ def test_morning_brief_is_read_only_and_covers_the_desk():
     assert "paper-stops --run-id" in text and "--dry-run" in text
     assert "paper-scan --run-id" in text
     assert "paper-scan --run-id \"$RUN_ID\" --run-config \"$RUN_CONFIG\" --strategy \"$STRATEGY\" --dry-run" in text
+    # The brief must carry the realized record and the deployment lens, or the
+    # agent writes the resume blind to what the book earned and to how far the
+    # live sample sits from the replay's distribution.
+    assert "run-report --run-id \"$RUN_ID\" --run-config \"$RUN_CONFIG\"" in text
+    assert "analysis_live_deployment.py" in text
+    assert 'results/$RUN_ID/ledger.sqlite' in text
     assert "execute-intents" not in text
     assert "reconcile" not in text
     assert "paper-close" not in text
     assert "run-init" not in text
+
+
+def test_morning_brief_runs_every_section_against_stubs(tmp_path):
+    """The brief must print all six sections and never a [FAILED] marker.
+
+    A section that silently fails hands the 09:00 agent an empty prompt area and
+    a resume written without the realized record, so the failure has to show up
+    here rather than in the briefing. The broker-facing commands and the ledger
+    lens are stubbed; the log is redirected so a test run cannot trample the
+    live brief's rotation file.
+    """
+    stub = tmp_path / "money_stub"
+    stub.write_text("#!/bin/bash\nprintf '%s\\n' \"STUB $*\"\n")
+    stub.chmod(0o755)
+    stub_py = tmp_path / "python_stub"
+    stub_py.write_text('#!/bin/bash\nprintf "%s\\n" "STUBPY $*"\n')
+    stub_py.chmod(0o755)
+    env = dict(
+        os.environ,
+        MONEY_BIN=str(stub),
+        MONEY_PY=str(stub_py),
+        BRIEF_LOG=str(tmp_path / "brief.log"),
+    )
+    out = subprocess.run(
+        ["bash", str(ROOT / "scripts" / "morning_brief.sh")],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=str(ROOT),
+    )
+    assert out.returncode == 0, out.stderr
+    for title in (
+        "HEALTH (ledger, no broker)",
+        "PAPER STATUS (Alpaca paper, live)",
+        "RUN REPORT (ledger, no broker)",
+        "LIVE DEPLOYMENT (slots, marked P&L, live-vs-replay parity)",
+        "STOPS DRY-RUN",
+        "SMA SCAN DRY-RUN",
+    ):
+        assert f"===== {title}" in out.stdout, title
+    assert "[FAILED" not in out.stdout
+    # The ledger lens is the only section that runs through the python seam.
+    assert "analysis_live_deployment.py" in out.stdout
+    assert "--ledger" in out.stdout and "results/run3/ledger.sqlite" in out.stdout
 
 
 CATCHUP = ROOT / "scripts" / "cron_catchup_daily.sh"

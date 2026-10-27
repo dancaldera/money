@@ -177,7 +177,7 @@ and `scripts/systemd/`.
 ## Daily loop
 
 ```bash
-bash scripts/morning_brief.sh        # read-only 09:00 dump: health + Alpaca status + stops/scan dry-run
+bash scripts/morning_brief.sh        # read-only 09:00 dump: health + Alpaca status + run-report + deployment lens + stops/scan dry-run
 bash scripts/daily_paper_run.sh      # context + closed-bar scan + crypto execute + reconcile
 bash scripts/execute_stock_intents.sh # guarded stock execution (08:31 local ~ 10:31 ET here)
 bash scripts/intraday_stop_run.sh    # 8% stop + reconcile (every 30 min)

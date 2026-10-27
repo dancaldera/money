@@ -13,8 +13,9 @@ REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_DIR" || exit 1
 source "$REPO_DIR/scripts/_lib.sh"
 
-MONEY="$REPO_DIR/.venv/bin/money"
-LOG="$REPO_DIR/results/morning_brief.log"
+MONEY="${MONEY_BIN:-$REPO_DIR/.venv/bin/money}"
+PY="${MONEY_PY:-$REPO_DIR/.venv/bin/python}"
+LOG="${BRIEF_LOG:-$REPO_DIR/results/morning_brief.log}"
 rotate_log "$LOG"
 
 run_section() {
@@ -39,6 +40,16 @@ run_section() {
 
   run_section "PAPER STATUS (Alpaca paper, live)" \
     "$MONEY" paper-status
+
+  # The realized record and the capital lens: what the book actually earned by
+  # leg and how the live sample sits against the replay it was chosen from.
+  # Both read the ledger only (no broker, no network, no writes).
+  run_section "RUN REPORT (ledger, no broker)" \
+    "$MONEY" run-report --run-id "$RUN_ID" --run-config "$RUN_CONFIG"
+
+  run_section "LIVE DEPLOYMENT (slots, marked P&L, live-vs-replay parity)" \
+    "$PY" "$REPO_DIR/scripts/analysis_live_deployment.py" \
+      --ledger "$REPO_DIR/results/$RUN_ID/ledger.sqlite" --run-config "$RUN_CONFIG"
 
   run_section "STOPS DRY-RUN (8% fill-derived, close nothing)" \
     "$MONEY" paper-stops --run-id "$RUN_ID" --run-config "$RUN_CONFIG" --dry-run
