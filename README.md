@@ -1,5 +1,11 @@
 # money — strategy backtesting & learning lab
 
+> **ARCHIVED 2026-10-28.** This experiment is finished — the paper desk ran 7 weeks at
+> −0.04%, the lab answered every parameter question it could, and the ceiling measured at
+> 2.2%/yr (1x) / 4.0%/yr (2x). Read **[POSTMORTEM.md](POSTMORTEM.md)** for the results, the
+> table of closed levers, and why it stopped. The repository is read-only; the code stays
+> as a reference implementation.
+
 A small Python project to **learn how trading strategies behave** on real historical
 data for **crypto** and **North-American stocks** (NASDAQ/NYSE). You define an
 "assumption" (a rule-based strategy), run it over history, and the tool reports your
